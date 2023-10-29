@@ -3,8 +3,7 @@
         "obs-studio": {
             "version": "29.1.2",
             "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
-            "label": "OBS sources",
-            "hashes": {
+            "label": "OBS sources", "hashes": {
                 "macos": "215f1fa5772c5dd9f3d6e35b0cb573912b00320149666a77864f9d305525504b",
                 "windows-x64": "46d451f3f42b9d2c59339ec268165849c7b7904cdf1cc2a8d44c015815a9e37d"
             }
@@ -33,15 +32,15 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.example.obs-plugintemplate"
+            "bundleId": "xyz.vrsal.obs-mpv"
         }
     },
-    "name": "obs-plugintemplate",
+    "name": "obs-mpv",
     "version": "1.0.0",
-    "author": "Your Name Here",
-    "website": "https://example.com",
-    "email": "me@example.com",
+    "author": "univrsal",
+    "website": "https://vrsal.xyz",
+    "email": "uni@vrsal.xyz",
     "uuids": {
-        "windowsApp": "00000000-0000-0000-0000-000000000000"
+        "windowsApp": "52c6c137-98d4-4888-9f76-2a6e4ccfe86f"
     }
 }
