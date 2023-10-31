@@ -1,10 +1,12 @@
-#include <X11/Xlib.h>
 #include <glad/glad_egl.h>
+#include <glad/glad.h>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 #include <obs-module.h>
 #include <plugin-support.h>
 #include <util/dstr.h>
+#include <obs-nix-platform.h>
+#include <obs-frontend-api.h>
 #include <util/platform.h>
 #include <util/threading.h>
 
@@ -17,10 +19,18 @@ struct mpvs_source {
     gs_texture_t* texture;
     pthread_mutex_t mutex;
     const char* file_path;
+    GLuint fbo;
     bool redraw;
     bool init;
     bool new_events;
     bool file_loaded;
+    PFNGLGENFRAMEBUFFERSPROC gen_fbo_fn;
+    PFNGLBINDFRAMEBUFFERPROC bind_fb_fn;
+    PFNGLDELETEFRAMEBUFFERSPROC del_fbo_fn;
+    PFNGLFRAMEBUFFERTEXTURE2DPROC fbo_tex2_fn;
+    PFNGLGETINTEGERVPROC get_int_fn;
+    PFNGLUSEPROGRAMPROC use_program_fn;
+    gs_effect_t* dummy_shader;
 };
 
 /* MPV specific functions -------------------------------------------------- */
@@ -69,10 +79,30 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
     context->height = height;
     context->file_path = obs_data_get_string(settings, "file");
 
-    if (context->texture)
-        gs_texture_destroy(context->texture);
     obs_enter_graphics();
+    char* path = obs_module_file("dummy.effect");
+    char* err = NULL;
+    context->dummy_shader = gs_effect_create_from_file(path, &err);
+    bfree(path);
+
+    if (err) {
+        obs_log(LOG_ERROR, "Failed to create dummy shader: %s", err);
+    }
+
+    if (context->texture) {
+        gs_texture_destroy(context->texture);
+        context->del_fbo_fn(1, &context->fbo);
+    }
     context->texture = gs_texture_create(width, height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
+    gs_set_render_target(context->texture, NULL);
+    context->gen_fbo_fn(1, &context->fbo);
+
+    unsigned int* tex = gs_texture_get_obj(context->texture);
+    if (tex) {
+        context->bind_fb_fn(GL_FRAMEBUFFER, context->fbo);
+        context->fbo_tex2_fn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *tex, 0);
+    }
+    gs_set_render_target(NULL, NULL);
     obs_leave_graphics();
 }
 
@@ -81,6 +111,12 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     struct mpvs_source* context = bzalloc(sizeof(struct mpvs_source));
     context->src = source;
     context->redraw = true;
+    context->gen_fbo_fn = (PFNGLGENFRAMEBUFFERSPROC) eglGetProcAddress("glGenFramebuffers");
+    context->del_fbo_fn = (PFNGLDELETEFRAMEBUFFERSPROC) eglGetProcAddress("glDeleteFramebuffers");
+    context->bind_fb_fn = (PFNGLBINDFRAMEBUFFERPROC) eglGetProcAddress("glBindFramebuffer");
+    context->fbo_tex2_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC) eglGetProcAddress("glFramebufferTexture2D");
+    context->get_int_fn = (PFNGLGETINTEGERVPROC) eglGetProcAddress("glGetIntegerv");
+    context->use_program_fn = (PFNGLUSEPROGRAMPROC) eglGetProcAddress("glUseProgram");
     pthread_mutex_init_value(&context->mutex);
     obs_source_update(context->src, settings);
     return context;
@@ -124,15 +160,12 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
 
     if (!context->init) {
         context->init = true;
-
-        obs_enter_graphics();
         context->mpv = mpv_create();
         int result = mpv_initialize(context->mpv) < 0;
         if (result < 0) {
             obs_log(LOG_ERROR, "Failed to initialize mpv context: %s", mpv_error_string(result));
             return;
         }
-        context->texture = gs_texture_create(512, 512, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
 #if defined(NDEBUG)
         mpvs_request_log_messages(context->mpvs, "info");
 #else
@@ -143,17 +176,7 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
             { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &(mpv_opengl_init_params) {
                                                        .get_proc_address = get_proc_address_mpvs,
                                                    } },
-            // Tell libmpvs that you will call mpvs_render_context_update() on render
-            // context update callbacks, and that you will _not_ block on the core
-            // ever (see <libmpvs/render.h> "Threading" section for what libmpvs
-            // functions you can call at all when this is active).
-            // In particular, this means you must call e.g. mpvs_command_async()
-            // instead of mpvs_command().
-            // If you want to use synchronous calls, either make them on a separate
-            // thread, or remove the option below (this will disable features like
-            // DR and is not recommended anyway).
             { MPV_RENDER_PARAM_ADVANCED_CONTROL, &(int) { 1 } },
-            //            {MPV_RENDER_PARAM_X11_DISPLAY, (void*)XOpenDisplay(NULL)},
             { 0 }
         };
         result = mpv_render_context_create(&context->mpv_gl, context->mpv, params);
@@ -164,7 +187,13 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
             mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
         }
 
-        obs_leave_graphics();
+        if (strlen(context->file_path) > 0) {
+            const char* cmd[] = { "loadfile", context->file_path, NULL };
+            result = mpv_command_async(context->mpv, 0, cmd);
+            if (result < 0) {
+                obs_log(LOG_ERROR, "Failed to load file: %s, %s", context->file_path, mpv_error_string(result));
+            }
+        }
     }
 
     pthread_mutex_lock(&context->mutex);
@@ -192,15 +221,8 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
 
             if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
                 mpv_event_log_message* msg = event->data;
-                // Print log messages about DR allocations, just to
-                // test whether it works. If there is more than 1 of
-                // these, it works. (The log message can actually change
-                // any time, so it's possible this logging stops working
-                // in the future.)
-                if (strstr(msg->text, "DR image"))
+                if (msg->log_level < MPV_LOG_LEVEL_INFO)
                     obs_log(LOG_INFO, "log: %s", msg->text);
-
-                obs_log(LOG_INFO, "log: %s", msg->text);
                 continue;
             }
             obs_log(LOG_INFO, "event: %s", mpv_event_name(event->event_id));
@@ -208,23 +230,32 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
     }
 
     if (need_redraw) {
-        obs_enter_graphics();
-        unsigned int* tex = gs_texture_get_obj(context->texture);
-        if (!tex)
-            return;
-        gs_set_render_target(context->texture, NULL);
+        GLuint currentProgram;
+        context->get_int_fn(GL_CURRENT_PROGRAM, (GLint*)&currentProgram);
+
+//        gs_texture_t* rt = gs_get_render_target();
+//        gs_zstencil_t* zt = gs_get_zstencil_target();
+//        gs_effect_t* e = gs_get_effect();
+//        gs_shader_t* ps = gs_get_pixel_shader();
+//        gs_shader_t* vs = gs_get_vertex_shader();
+//        struct gs_rect rct = {0};
+//        gs_get_viewport(&rct);
+//        gs_blend_state_push();
+//        UNUSED_PARAMETER(e);
+//        gs_load_vertexshader(NULL);
+//        gs_load_pixelshader(NULL);
+//        mpv_render_frame_info inf;
         mpv_render_param params[] = {
-            // Specify the default framebuffer (0) as target. This will
-            // render onto the entire screen. If you want to show the video
-            // in a smaller rectangle or apply fancy transformations, you'll
-            // need to render into a separate FBO and draw it manually.
             { MPV_RENDER_PARAM_OPENGL_FBO, &(mpv_opengl_fbo) {
-                                               .fbo = 0,
+                                               .fbo = context->fbo,
                                                .w = context->width,
                                                .h = context->height,
                                            } },
-            // Flip rendering (needed due to flipped GL coordinate system).
-            { MPV_RENDER_PARAM_FLIP_Y, &(int) { 1 } }, { 0 }
+            { MPV_RENDER_PARAM_NEXT_FRAME_INFO, &(mpv_render_frame_info) {
+                                                    .flags = 1,
+                                                    .target_time = 0,
+                                                }},
+            { 0 }
         };
         // See render_gl.h on what OpenGL environment mpvs expects, and
         // other API details.
@@ -232,11 +263,21 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
         if (result != 0) {
             obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
         }
-
-        gs_set_render_target(NULL, NULL);
-        obs_leave_graphics();
+//        gs_blend_state_pop();
+//        gs_set_render_target(rt, zt);
+//        gs_set_viewport(rct.x, rct.y, rct.cx, rct.cy);;
+//        gs_load_pixelshader(ps);
+//        gs_load_vertexshader(vs);
+        context->use_program_fn(currentProgram);
     }
+    /* obs keeps track of what program is loaded and will only call glUseProgram
+     * if the requested program is not already loaded. The problem is that MPV
+     * will load its own shader programs via OpenGL functions, which obs will
+     * be unaware of. We load this dumm shader here to make sure obs loads
+     * whatever program it needs to render the scene.
+     */
 
+    UNUSED_PARAMETER(effect);
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
@@ -275,16 +316,10 @@ static void mpvs_source_defaults(obs_data_t* settings)
 static void mpvs_play_pause(void* data, bool pause)
 {
     struct mpvs_source* context = data;
+    UNUSED_PARAMETER(context);
     if (pause) {
 
     } else {
-    }
-    if (strlen(context->file_path) > 0) {
-        const char* cmd[] = { "loadfile", context->file_path, NULL };
-        int result = mpv_command_async(context->mpv, 0, cmd);
-        if (result < 0) {
-            obs_log(LOG_ERROR, "Failed to load file: %s, %s", context->file_path, mpv_error_string(result));
-        }
     }
     UNUSED_PARAMETER(data);
 }
