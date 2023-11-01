@@ -14,13 +14,12 @@ include(helpers)
 
 add_library(${CMAKE_PROJECT_NAME} MODULE)
 add_subdirectory(deps)
-# find mpv via pkg-config
+
+find_package(libobs REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MPV REQUIRED IMPORTED_TARGET mpv)
 
-set(MPV_DEBUG_LIB /home/usr/docs/git/c/mpv/build/libmpv.so.2.1.0)
-find_package(libobs REQUIRED)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs ${MPV_DEBUG_LIB} OBS::glad)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs ${MPV_LIBRARIES} OBS::glad)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${MPV_INCLUDE_DIRS})
 
 if(ENABLE_FRONTEND_API)
