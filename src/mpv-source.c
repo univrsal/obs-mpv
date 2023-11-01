@@ -50,7 +50,7 @@ struct mpv_source {
 
     // jack source for audio
     obs_source_t* jack_source;
-    char* jack_port_name; // name of the jack capture source
+    char* jack_port_name;   // name of the jack capture source
     char* jack_client_name; // name of the jack client mpv opens for audio output
 };
 
@@ -59,7 +59,7 @@ struct mpv_source {
 #define MPV_SEND_COMMAND_ASYNC(...)                                                                   \
     do {                                                                                              \
         if (!context->init)                                                                           \
-            break;                                                                                         \
+            break;                                                                                    \
         int __mpv_result = mpv_command_async(context->mpv, 0, (const char*[]) { __VA_ARGS__, NULL }); \
         if (__mpv_result != 0)                                                                        \
             obs_log(LOG_ERROR, "Failed to run mpv command: %s", mpv_error_string(__mpv_result));      \
@@ -84,11 +84,11 @@ struct mpv_source {
     } while (0)
 
 #define MPV_SET_OPTION(name, val)                                                                        \
-    do {                                                                                                   \
-        if (!context->init)                                                                                \
-            break;                                                                                         \
+    do {                                                                                                 \
+        if (!context->init)                                                                              \
+            break;                                                                                       \
         int __mpv_result = mpv_set_option_string(context->mpv, name, val);                               \
-        if (__mpv_result < 0)                                                                              \
+        if (__mpv_result < 0)                                                                            \
             obs_log(LOG_ERROR, "Failed to set mpv option %s: %s", name, mpv_error_string(__mpv_result)); \
     } while (0)
 
@@ -118,7 +118,8 @@ static void* get_proc_address_mpvs(void* ctx, const char* name)
     return addr;
 }
 
-static void mpv_audio_callback(void *data, int samples, int sample_format, void *audio_data) {
+static void mpv_audio_callback(void* data, int samples, int sample_format, void* audio_data)
+{
     struct mpv_source* context = data;
     UNUSED_PARAMETER(samples);
     UNUSED_PARAMETER(sample_format);
@@ -202,7 +203,7 @@ static inline void mpvs_handle_events(struct mpv_source* context)
         }
 
         if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
-            mpv_event_property *prop = (mpv_event_property *)event->data;
+            mpv_event_property* prop = (mpv_event_property*)event->data;
             if (strcmp(prop->name, "audio-data") == 0) {
                 os_breakpoint();
             }
@@ -290,7 +291,6 @@ static void mpvs_init(struct mpv_source* context)
         MPV_SET_PROP_STR("ao", "jack");
         MPV_SET_PROP_STR("jack-port", context->jack_port_name);
         MPV_SET_PROP_STR("jack-name", context->jack_client_name);
-
 
         mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
         mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
@@ -600,10 +600,9 @@ static void mpvs_mouse_move(void* data, const struct obs_mouse_event* event,
     MPV_SEND_COMMAND_ASYNC("mouse", pos, pos2);
 }
 
-
-static void mpvs_enum_active_sources(void *data,
-                obs_source_enum_proc_t enum_callback,
-                void *param)
+static void mpvs_enum_active_sources(void* data,
+    obs_source_enum_proc_t enum_callback,
+    void* param)
 {
     struct mpv_source* context = data;
     enum_callback(context->src, context->jack_source, param);
