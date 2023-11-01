@@ -1,19 +1,23 @@
-#include <glad/glad_egl.h>
 #include <glad/glad.h>
+#include <glad/glad_egl.h>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
+#include <obs-frontend-api.h>
 #include <obs-module.h>
+#include <obs-nix-platform.h>
 #include <plugin-support.h>
 #include <util/dstr.h>
-#include <obs-nix-platform.h>
-#include <obs-frontend-api.h>
 #include <util/platform.h>
 #include <util/threading.h>
 
+#define MPV_VERBOSE_LOGGING 0
+
 #if defined(NDEBUG)
-#define MPV_LOG_LEVEL "info"
+#    define MPV_LOG_LEVEL "info"
+#    define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_WARN
 #else
-#define MPV_LOG_LEVEL "trace"
+#    define MPV_LOG_LEVEL "trace"
+#    define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_INFO
 #endif
 
 struct mpvs_source {
@@ -26,6 +30,7 @@ struct mpvs_source {
     pthread_mutex_t mutex;
     const char* file_path;
     GLuint fbo;
+    bool osc; // mpv on screen controller
     bool redraw;
     bool init;
     bool init_failed;
@@ -40,6 +45,33 @@ struct mpvs_source {
 };
 
 /* MPV specific functions -------------------------------------------------- */
+
+#define MPV_SEND_COMMAND_ASYNC(...)                                                                   \
+    do {                                                                                              \
+        if (!context->init)                                                                           \
+            break;                                                                                         \
+        int __mpv_result = mpv_command_async(context->mpv, 0, (const char*[]) { __VA_ARGS__, NULL }); \
+        if (__mpv_result != 0)                                                                        \
+            obs_log(LOG_ERROR, "Failed to run mpv command: %s", mpv_error_string(__mpv_result));      \
+    } while (0)
+
+#define MPV_GET_PROP_FLAG(name, out)                                                                       \
+    do {                                                                                                   \
+        if (!context->init)                                                                                \
+            break;                                                                                         \
+        int __mpv_result = mpv_get_property(context->mpv, name, MPV_FORMAT_FLAG, &out);                    \
+        if (error < 0)                                                                                     \
+            obs_log(LOG_ERROR, "Failed to get mpv property %s: %s", name, mpv_error_string(__mpv_result)); \
+    } while (0)
+
+#define MPV_SET_PROP_STR(name, val)                                                                        \
+    do {                                                                                                   \
+        if (!context->init)                                                                                \
+            break;                                                                                         \
+        int __mpv_result = mpv_set_property_string(context->mpv, name, val);                               \
+        if (__mpv_result < 0)                                                                              \
+            obs_log(LOG_ERROR, "Failed to set mpv property %s: %s", name, mpv_error_string(__mpv_result)); \
+    } while (0)
 
 static void on_mpvs_render_events(void* ctx)
 {
@@ -65,6 +97,14 @@ static void* get_proc_address_mpvs(void* ctx, const char* name)
     UNUSED_PARAMETER(ctx);
     void* addr = eglGetProcAddress(name);
     return addr;
+}
+
+static void mpv_audio_callback(void *data, int samples, int sample_format, void *audio_data) {
+    struct mpv_source* context = data;
+    UNUSED_PARAMETER(samples);
+    UNUSED_PARAMETER(sample_format);
+    UNUSED_PARAMETER(context);
+    UNUSED_PARAMETER(audio_data);
 }
 
 /* Misc functions ---------------------------------------------------------- */
@@ -100,7 +140,29 @@ static inline void mpvs_generate_texture(struct mpvs_source* context)
     gs_set_render_target(NULL, NULL);
 }
 
-static inline void mpvs_handle_events(struct mpvs_source* context) {
+static inline int mpvs_mpv_log_level_to_obs(mpv_log_level lvl)
+{
+    switch (lvl) {
+    case MPV_LOG_LEVEL_FATAL:
+    case MPV_LOG_LEVEL_ERROR:
+        return LOG_ERROR;
+    case MPV_LOG_LEVEL_WARN:
+        return LOG_WARNING;
+    case MPV_LOG_LEVEL_INFO:
+        return LOG_INFO;
+    case MPV_LOG_LEVEL_DEBUG:
+#if MPV_VERBOSE_LOGGING
+    case MPV_LOG_LEVEL_NONE:
+    case MPV_LOG_LEVEL_V:
+    case MPV_LOG_LEVEL_TRACE:
+#endif
+    default:
+        return LOG_DEBUG;
+    }
+}
+
+static inline void mpvs_handle_events(struct mpvs_source* context)
+{
     while (1) {
         mpv_event* event = mpv_wait_event(context->mpv, 0);
         if (event->event_id == MPV_EVENT_NONE)
@@ -108,24 +170,35 @@ static inline void mpvs_handle_events(struct mpvs_source* context) {
 
         if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
             mpv_event_log_message* msg = event->data;
-            if (msg->log_level < MPV_LOG_LEVEL_INFO)
-                obs_log(LOG_INFO, "log: %s", msg->text);
+            if (msg->log_level <= MPV_MIN_LOG_LEVEL) {
+                // remove \n character
+                char* txt = bstrdup(msg->text);
+                char* end = txt + strlen(txt) - 1;
+                if (*end == '\n')
+                    *end = '\0';
+                obs_log(mpvs_mpv_log_level_to_obs(msg->log_level), "log: %s", txt);
+                bfree(txt);
+            }
             continue;
         }
 
-        if(event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
+        if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+            mpv_event_property *prop = (mpv_event_property *)event->data;
+            if (strcmp(prop->name, "audio-data") == 0) {
+                os_breakpoint();
+            }
+        }
+
+        if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
             // Retrieve the new video size.
             int64_t w, h;
-            if (mpv_get_property(context->mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 &&
-                mpv_get_property(context->mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 &&
-                w > 0 && h > 0)
-            {
+            if (mpv_get_property(context->mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 && mpv_get_property(context->mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 && w > 0 && h > 0) {
                 context->width = w;
                 context->height = h;
                 mpvs_generate_texture(context);
             }
         }
-        obs_log(LOG_INFO, "event: %s", mpv_event_name(event->event_id));
+        obs_log(LOG_DEBUG, "event: %s", mpv_event_name(event->event_id));
     }
 }
 
@@ -144,9 +217,7 @@ static inline void mpvs_render(struct mpvs_source* context)
                                            .w = context->width,
                                            .h = context->height,
                                        } },
-        { MPV_RENDER_PARAM_NEXT_FRAME_INFO, &info},
-        { MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, &(int) { 1 }},
-        { 0 }
+        { MPV_RENDER_PARAM_NEXT_FRAME_INFO, &info }, { MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, &(int) { 1 } }, { 0 }
     };
 
     gs_blend_state_push();
@@ -182,8 +253,7 @@ static void mpvs_init(struct mpvs_source* context)
         { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &(mpv_opengl_init_params) {
                                                    .get_proc_address = get_proc_address_mpvs,
                                                } },
-        { MPV_RENDER_PARAM_ADVANCED_CONTROL, &(int) { 1 } },
-        { 0 }
+        { MPV_RENDER_PARAM_ADVANCED_CONTROL, &(int) { 1 } }, { 0 }
     };
 
     result = mpv_render_context_create(&context->mpv_gl, context->mpv, params);
@@ -193,9 +263,8 @@ static void mpvs_init(struct mpvs_source* context)
         // By default mpv will wait in the render callback to exactly hit
         // whatever framerate the playing video has, but we want to render
         // at whatever frame rate obs is using
-        result = mpv_set_property_string(context->mpv, "video-timing-offset", "0");
-        if (result != 0)
-            obs_log(LOG_ERROR, "Failed to set video-timing-offset: %s", mpv_error_string(result));
+        MPV_SET_PROP_STR("video-timing-offset", "0");
+
         mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
         mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
     }
@@ -203,7 +272,7 @@ static void mpvs_init(struct mpvs_source* context)
     mpvs_load_file(context);
 }
 
-/* OBS specific functions -------------------------------------------------- */
+/* Basic obs functions ----------------------------------------------------- */
 
 static const char* mpvs_source_get_name(void* unused)
 {
@@ -215,12 +284,15 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
 {
     struct mpvs_source* context = data;
     const char* path = obs_data_get_string(settings, "file");
+    context->osc = obs_data_get_bool(settings, "osc");
     if (!context->file_path || strcmp(path, context->file_path) != 0) {
         context->file_loaded = false;
         context->file_path = path;
         if (context->init)
             mpvs_load_file(context);
     }
+
+    MPV_SET_PROP_STR("osc", context->osc ? "yes" : "no");
 }
 
 static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
@@ -230,12 +302,12 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->height = 512;
     context->src = source;
     context->redraw = true;
-    context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC) eglGetProcAddress("glGenFramebuffers");
-    context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC) eglGetProcAddress("glDeleteFramebuffers");
-    context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC) eglGetProcAddress("glBindFramebuffer");
-    context->_glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC) eglGetProcAddress("glFramebufferTexture2D");
-    context->_glGetIntegerv = (PFNGLGETINTEGERVPROC) eglGetProcAddress("glGetIntegerv");
-    context->_glUseProgram = (PFNGLUSEPROGRAMPROC) eglGetProcAddress("glUseProgram");
+    context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)eglGetProcAddress("glGenFramebuffers");
+    context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)eglGetProcAddress("glDeleteFramebuffers");
+    context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)eglGetProcAddress("glBindFramebuffer");
+    context->_glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC)eglGetProcAddress("glFramebufferTexture2D");
+    context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)eglGetProcAddress("glGetIntegerv");
+    context->_glUseProgram = (PFNGLUSEPROGRAMPROC)eglGetProcAddress("glUseProgram");
 
     pthread_mutex_init_value(&context->mutex);
 
@@ -280,6 +352,8 @@ static obs_properties_t* mpvs_source_properties(void* unused)
 
     dstr_free(&filter_str);
 
+    obs_properties_add_bool(props, "osc", obs_module_text("EnableOSC"));
+
     return props;
 }
 
@@ -316,16 +390,8 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
     if (need_poll)
         mpvs_handle_events(context);
 
-
     if (context->init && need_redraw)
         mpvs_render(context);
-
-}
-
-static void mpvs_source_tick(void* data, float seconds)
-{
-    UNUSED_PARAMETER(data);
-    UNUSED_PARAMETER(seconds);
 }
 
 static uint32_t mpvs_source_getwidth(void* data)
@@ -340,81 +406,170 @@ static uint32_t mpvs_source_getheight(void* data)
     return context->height;
 }
 
-static void mpvs_source_defaults(obs_data_t* settings)
-{
-    UNUSED_PARAMETER(settings);
-}
+/* OBS media functions ----------------------------------------------------- */
 
 static void mpvs_play_pause(void* data, bool pause)
 {
     struct mpvs_source* context = data;
-    UNUSED_PARAMETER(context);
-    if (pause) {
-
-    } else {
-    }
-    UNUSED_PARAMETER(data);
+    mpv_set_property_string(context->mpv, "pause", pause ? "yes" : "no");
 }
 
 static void mpvs_restart(void* data)
 {
-    UNUSED_PARAMETER(data);
+    struct mpvs_source* context = data;
+    MPV_SEND_COMMAND_ASYNC("seek", "0", "absolute");
 }
 
 static void mpvs_stop(void* data)
 {
-    UNUSED_PARAMETER(data);
+    struct mpvs_source* context = data;
+    MPV_SEND_COMMAND_ASYNC("stop");
 }
 
 static void mpvs_playlist_next(void* data)
 {
-    UNUSED_PARAMETER(data);
+    struct mpvs_source* context = data;
+    MPV_SEND_COMMAND_ASYNC("playlist-next");
 }
 
 static void mpvs_playlist_prev(void* data)
 {
-    UNUSED_PARAMETER(data);
+    struct mpvs_source* context = data;
+    MPV_SEND_COMMAND_ASYNC("playlist-prev");
 }
 
 static int64_t mpvs_get_duration(void* data)
 {
-    UNUSED_PARAMETER(data);
-    return 5000;
+    struct mpvs_source* context = data;
+    double duration;
+    int error;
+
+    error = mpv_get_property(context->mpv, "duration/full", MPV_FORMAT_DOUBLE, &duration);
+
+    if (error < 0) {
+        obs_log(LOG_ERROR, "Error getting duration: %s\n", mpv_error_string(error));
+        return 0;
+    }
+    return floor(duration) * 1000;
 }
 
 static int64_t mpvs_get_time(void* data)
 {
-    UNUSED_PARAMETER(data);
-    return 500;
+    struct mpvs_source* context = data;
+    double playback_time;
+    int error;
+
+    error = mpv_get_property(context->mpv, "time-pos", MPV_FORMAT_DOUBLE, &playback_time);
+
+    if (error < 0) {
+        obs_log(LOG_ERROR, "Error getting playback time: %s\n", mpv_error_string(error));
+        return 0;
+    }
+    return floor(playback_time) * 1000;
 }
 
 static void mpvs_set_time(void* data, int64_t ms)
 {
-    UNUSED_PARAMETER(ms);
-    UNUSED_PARAMETER(data);
+    struct mpvs_source* context = data;
+    double time = ms / 1000.0;
+    struct dstr str;
+    dstr_init(&str);
+    dstr_catf(&str, "%.2f", time);
+    MPV_SEND_COMMAND_ASYNC("seek", str.array, "absolute");
+    dstr_free(&str);
 }
 
 static enum obs_media_state mpvs_get_state(void* data)
 {
-    UNUSED_PARAMETER(data);
-    return OBS_MEDIA_STATE_PLAYING;
+    struct mpvs_source* context = data;
+    int error = 0, paused = 0, core_idle = 0, idle = 0;
+    MPV_GET_PROP_FLAG("pause", paused);
+    MPV_GET_PROP_FLAG("core-idle", core_idle);
+    MPV_GET_PROP_FLAG("idle-active", idle);
+
+    if (paused)
+        return OBS_MEDIA_STATE_PAUSED;
+    if (core_idle)
+        return OBS_MEDIA_STATE_BUFFERING;
+    if (idle)
+        return OBS_MEDIA_STATE_ENDED;
+    if (!paused)
+        return OBS_MEDIA_STATE_PLAYING;
+    return OBS_MEDIA_STATE_NONE;
+}
+
+/* OBS interaction functions ----------------------------------------------- */
+
+static void mpvs_mouse_click(void* data, const struct obs_mouse_event* event,
+    int32_t type, bool mouse_up, uint32_t click_count)
+{
+    struct mpvs_source* context = data;
+    UNUSED_PARAMETER(context);
+    UNUSED_PARAMETER(event);
+    UNUSED_PARAMETER(type);
+    UNUSED_PARAMETER(mouse_up);
+    UNUSED_PARAMETER(click_count);
+
+    DARRAY(mpv_node)
+    nodes;
+    da_init(nodes);
+    da_resize(nodes, 5);
+    nodes.array[0].format = MPV_FORMAT_STRING;
+    nodes.array[0].u.string = "mouse";
+    nodes.array[1].format = MPV_FORMAT_INT64;
+    nodes.array[1].u.int64 = event->x;
+    nodes.array[2].format = MPV_FORMAT_INT64;
+    nodes.array[2].u.int64 = event->y;
+    nodes.array[3].format = MPV_FORMAT_INT64;
+    nodes.array[3].u.int64 = type;
+    nodes.array[4].format = MPV_FORMAT_STRING;
+    nodes.array[4].u.string = click_count > 1 ? "double" : "single";
+
+    mpv_node_list list;
+    list.num = nodes.num;
+    list.values = nodes.array;
+
+    mpv_node main;
+    main.format = MPV_FORMAT_NODE_ARRAY;
+    main.u.list = &list;
+
+    if (mouse_up) {
+        list.num = 3;
+        mpv_command_node_async(context->mpv, 0, &main);
+    } else {
+        mpv_command_node_async(context->mpv, 0, &main);
+    }
+    da_free(nodes);
+}
+
+static void mpvs_mouse_move(void* data, const struct obs_mouse_event* event,
+    bool mouse_leave)
+{
+    struct mpvs_source* context = data;
+    UNUSED_PARAMETER(mouse_leave);
+    // convert position to string
+    char pos[32];
+    snprintf(pos, sizeof(pos), "%d", event->x);
+    char pos2[32];
+    snprintf(pos2, sizeof(pos2), "%d", event->y);
+    obs_log(LOG_INFO, "%i %i", event->x, event->y);
+    MPV_SEND_COMMAND_ASYNC("mouse", pos, pos2);
 }
 
 struct obs_source_info mpv_source_info = {
     .id = "mpvs_source",
     .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CONTROLLABLE_MEDIA,
+    .output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CONTROLLABLE_MEDIA | OBS_SOURCE_INTERACTION,
     .create = mpvs_source_create,
     .destroy = mpvs_source_destroy,
     .update = mpvs_source_update,
     .get_name = mpvs_source_get_name,
-    .get_defaults = mpvs_source_defaults,
     .get_width = mpvs_source_getwidth,
     .get_height = mpvs_source_getheight,
     .video_render = mpvs_source_render,
-    .video_tick = mpvs_source_tick,
     .get_properties = mpvs_source_properties,
     .icon_type = OBS_ICON_TYPE_MEDIA,
+
     .media_play_pause = mpvs_play_pause,
     .media_restart = mpvs_restart,
     .media_stop = mpvs_stop,
@@ -424,4 +579,7 @@ struct obs_source_info mpv_source_info = {
     .media_get_time = mpvs_get_time,
     .media_set_time = mpvs_set_time,
     .media_get_state = mpvs_get_state,
+
+    .mouse_click = mpvs_mouse_click,
+    .mouse_move = mpvs_mouse_move,
 };
