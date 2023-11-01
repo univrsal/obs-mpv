@@ -10,27 +10,33 @@
 #include <util/platform.h>
 #include <util/threading.h>
 
+#if defined(NDEBUG)
+#define MPV_LOG_LEVEL "info"
+#else
+#define MPV_LOG_LEVEL "trace"
+#endif
+
 struct mpvs_source {
     uint32_t width;
     uint32_t height;
     obs_source_t* src;
     mpv_handle* mpv;
     mpv_render_context* mpv_gl;
-    gs_texture_t* texture;
+    gs_texture_t* video_buffer;
     pthread_mutex_t mutex;
     const char* file_path;
     GLuint fbo;
     bool redraw;
     bool init;
+    bool init_failed;
     bool new_events;
     bool file_loaded;
-    PFNGLGENFRAMEBUFFERSPROC gen_fbo_fn;
-    PFNGLBINDFRAMEBUFFERPROC bind_fb_fn;
-    PFNGLDELETEFRAMEBUFFERSPROC del_fbo_fn;
-    PFNGLFRAMEBUFFERTEXTURE2DPROC fbo_tex2_fn;
-    PFNGLGETINTEGERVPROC get_int_fn;
-    PFNGLUSEPROGRAMPROC use_program_fn;
-    gs_effect_t* dummy_shader;
+    PFNGLGENFRAMEBUFFERSPROC _glGenFramebuffers;
+    PFNGLBINDFRAMEBUFFERPROC _glBindFramebuffer;
+    PFNGLDELETEFRAMEBUFFERSPROC _glDeleteFramebuffers;
+    PFNGLFRAMEBUFFERTEXTURE2DPROC _glFramebufferTexture2D;
+    PFNGLGETINTEGERVPROC _glGetIntegerv;
+    PFNGLUSEPROGRAMPROC _glUseProgram;
 };
 
 /* MPV specific functions -------------------------------------------------- */
@@ -61,6 +67,144 @@ static void* get_proc_address_mpvs(void* ctx, const char* name)
     return addr;
 }
 
+/* Misc functions ---------------------------------------------------------- */
+
+static inline void mpvs_load_file(struct mpvs_source* context)
+{
+    if (strlen(context->file_path) > 0) {
+        const char* cmd[] = { "loadfile", context->file_path, NULL };
+        int result = mpv_command_async(context->mpv, 0, cmd);
+        if (result < 0) {
+            obs_log(LOG_ERROR, "Failed to load file: %s, %s", context->file_path, mpv_error_string(result));
+        }
+    }
+}
+
+static inline void mpvs_generate_texture(struct mpvs_source* context)
+{
+    if (context->video_buffer) {
+        gs_texture_destroy(context->video_buffer);
+        context->_glDeleteFramebuffers(1, &context->fbo);
+    }
+    context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
+    gs_set_render_target(context->video_buffer, NULL);
+    if (context->fbo)
+        context->_glDeleteFramebuffers(1, &context->fbo);
+    context->_glGenFramebuffers(1, &context->fbo);
+
+    unsigned int* tex = gs_texture_get_obj(context->video_buffer);
+    if (tex) {
+        context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
+        context->_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *tex, 0);
+    }
+    gs_set_render_target(NULL, NULL);
+}
+
+static inline void mpvs_handle_events(struct mpvs_source* context) {
+    while (1) {
+        mpv_event* event = mpv_wait_event(context->mpv, 0);
+        if (event->event_id == MPV_EVENT_NONE)
+            break;
+
+        if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
+            mpv_event_log_message* msg = event->data;
+            if (msg->log_level < MPV_LOG_LEVEL_INFO)
+                obs_log(LOG_INFO, "log: %s", msg->text);
+            continue;
+        }
+
+        if(event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
+            // Retrieve the new video size.
+            int64_t w, h;
+            if (mpv_get_property(context->mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 &&
+                mpv_get_property(context->mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 &&
+                w > 0 && h > 0)
+            {
+                context->width = w;
+                context->height = h;
+                mpvs_generate_texture(context);
+            }
+        }
+        obs_log(LOG_INFO, "event: %s", mpv_event_name(event->event_id));
+    }
+}
+
+static inline void mpvs_render(struct mpvs_source* context)
+{
+    // make sure that we restore the current program after mpv is done
+    // as obs will not load the progam because it internally keeps track
+    // of the current program and only loads it if it has changed
+    GLuint currentProgram;
+    context->_glGetIntegerv(GL_CURRENT_PROGRAM, (GLint*)&currentProgram);
+    mpv_render_frame_info info;
+
+    mpv_render_param params[] = {
+        { MPV_RENDER_PARAM_OPENGL_FBO, &(mpv_opengl_fbo) {
+                                           .fbo = context->fbo,
+                                           .w = context->width,
+                                           .h = context->height,
+                                       } },
+        { MPV_RENDER_PARAM_NEXT_FRAME_INFO, &info},
+        { MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, &(int) { 1 }},
+        { 0 }
+    };
+
+    gs_blend_state_push();
+
+    uint64_t start = os_gettime_ns();
+    int result = mpv_render_context_render(context->mpv_gl, params);
+    if (result != 0) {
+        obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
+    } else {
+        uint64_t end = os_gettime_ns();
+        // print the time it took to render the frame in ms
+        obs_log(LOG_INFO, "render time: %fms", (end - start) / 1000000.0);
+    }
+
+    gs_blend_state_pop();
+
+    context->_glUseProgram(currentProgram);
+}
+
+static void mpvs_init(struct mpvs_source* context)
+{
+    if (context->init_failed)
+        return;
+    context->init = true;
+    context->mpv = mpv_create();
+
+    int result = mpv_initialize(context->mpv) < 0;
+    if (result < 0) {
+        obs_log(LOG_ERROR, "Failed to initialize mpv context: %s", mpv_error_string(result));
+        context->init_failed = true;
+        return;
+    }
+
+    mpv_request_log_messages(context->mpv, MPV_LOG_LEVEL);
+
+    mpv_render_param params[] = {
+        { MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_OPENGL },
+        { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &(mpv_opengl_init_params) {
+                                                   .get_proc_address = get_proc_address_mpvs,
+                                               } },
+        { MPV_RENDER_PARAM_ADVANCED_CONTROL, &(int) { 1 } },
+        { 0 }
+    };
+
+    result = mpv_render_context_create(&context->mpv_gl, context->mpv, params);
+    if (result != 0) {
+        obs_log(LOG_ERROR, "Failed to initialize mpvs GL context: %s", mpv_error_string(result));
+    } else {
+        result = mpv_set_property_string(context->mpv, "video-timing-offset", "0");
+        if (result != 0)
+            obs_log(LOG_ERROR, "Failed to set video-timing-offset: %s", mpv_error_string(result));
+        mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
+        mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
+    }
+
+    mpvs_load_file(context);
+}
+
 /* OBS specific functions -------------------------------------------------- */
 
 static const char* mpvs_source_get_name(void* unused)
@@ -72,52 +216,36 @@ static const char* mpvs_source_get_name(void* unused)
 static void mpvs_source_update(void* data, obs_data_t* settings)
 {
     struct mpvs_source* context = data;
-    uint32_t width = (uint32_t)obs_data_get_int(settings, "width");
-    uint32_t height = (uint32_t)obs_data_get_int(settings, "height");
-
-    context->width = width;
-    context->height = height;
-    context->file_path = obs_data_get_string(settings, "file");
-
-    obs_enter_graphics();
-    char* path = obs_module_file("dummy.effect");
-    char* err = NULL;
-    context->dummy_shader = gs_effect_create_from_file(path, &err);
-    bfree(path);
-
-    if (err) {
-        obs_log(LOG_ERROR, "Failed to create dummy shader: %s", err);
+    const char* path = obs_data_get_string(settings, "file");
+    if (!context->file_path || strcmp(path, context->file_path) != 0) {
+        context->file_loaded = false;
+        context->file_path = path;
+        if (context->init)
+            mpvs_load_file(context);
     }
-
-    if (context->texture) {
-        gs_texture_destroy(context->texture);
-        context->del_fbo_fn(1, &context->fbo);
-    }
-    context->texture = gs_texture_create(width, height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
-    gs_set_render_target(context->texture, NULL);
-    context->gen_fbo_fn(1, &context->fbo);
-
-    unsigned int* tex = gs_texture_get_obj(context->texture);
-    if (tex) {
-        context->bind_fb_fn(GL_FRAMEBUFFER, context->fbo);
-        context->fbo_tex2_fn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *tex, 0);
-    }
-    gs_set_render_target(NULL, NULL);
-    obs_leave_graphics();
 }
 
 static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
 {
     struct mpvs_source* context = bzalloc(sizeof(struct mpvs_source));
+    context->width = 512;
+    context->height = 512;
     context->src = source;
     context->redraw = true;
-    context->gen_fbo_fn = (PFNGLGENFRAMEBUFFERSPROC) eglGetProcAddress("glGenFramebuffers");
-    context->del_fbo_fn = (PFNGLDELETEFRAMEBUFFERSPROC) eglGetProcAddress("glDeleteFramebuffers");
-    context->bind_fb_fn = (PFNGLBINDFRAMEBUFFERPROC) eglGetProcAddress("glBindFramebuffer");
-    context->fbo_tex2_fn = (PFNGLFRAMEBUFFERTEXTURE2DPROC) eglGetProcAddress("glFramebufferTexture2D");
-    context->get_int_fn = (PFNGLGETINTEGERVPROC) eglGetProcAddress("glGetIntegerv");
-    context->use_program_fn = (PFNGLUSEPROGRAMPROC) eglGetProcAddress("glUseProgram");
+    context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC) eglGetProcAddress("glGenFramebuffers");
+    context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC) eglGetProcAddress("glDeleteFramebuffers");
+    context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC) eglGetProcAddress("glBindFramebuffer");
+    context->_glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC) eglGetProcAddress("glFramebufferTexture2D");
+    context->_glGetIntegerv = (PFNGLGETINTEGERVPROC) eglGetProcAddress("glGetIntegerv");
+    context->_glUseProgram = (PFNGLUSEPROGRAMPROC) eglGetProcAddress("glUseProgram");
+
     pthread_mutex_init_value(&context->mutex);
+
+    // generates a default texture with size 512x512, mpv will tell us the acutal size later
+    obs_enter_graphics();
+    mpvs_generate_texture(context);
+    obs_leave_graphics();
+
     obs_source_update(context->src, settings);
     return context;
 }
@@ -125,9 +253,17 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
 static void mpvs_source_destroy(void* data)
 {
     struct mpvs_source* context = data;
-    UNUSED_PARAMETER(context);
     mpv_render_context_free(context->mpv_gl);
     mpv_destroy(context->mpv);
+
+    obs_enter_graphics();
+    if (context->video_buffer) {
+        if (context->fbo)
+            context->_glDeleteFramebuffers(1, &context->fbo);
+        gs_texture_destroy(context->video_buffer);
+    }
+    obs_leave_graphics();
+
     bfree(data);
 }
 
@@ -136,11 +272,6 @@ static obs_properties_t* mpvs_source_properties(void* unused)
     UNUSED_PARAMETER(unused);
 
     obs_properties_t* props = obs_properties_create();
-    obs_properties_add_int(props, "width",
-        obs_module_text("ColorSource.Width"), 0, 4096, 1);
-
-    obs_properties_add_int(props, "height",
-        obs_module_text("ColorSource.Height"), 0, 4096, 1);
 
     struct dstr filter_str = { 0 };
     dstr_copy(&filter_str, "Webm (*.webm)");
@@ -157,45 +288,24 @@ static obs_properties_t* mpvs_source_properties(void* unused)
 static void mpvs_source_render(void* data, gs_effect_t* effect)
 {
     struct mpvs_source* context = data;
+    gs_blend_state_push();
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
-    if (!context->init) {
-        context->init = true;
-        context->mpv = mpv_create();
-        int result = mpv_initialize(context->mpv) < 0;
-        if (result < 0) {
-            obs_log(LOG_ERROR, "Failed to initialize mpv context: %s", mpv_error_string(result));
-            return;
-        }
-#if defined(NDEBUG)
-        mpvs_request_log_messages(context->mpvs, "info");
-#else
-        mpv_request_log_messages(context->mpv, "trace");
-#endif
-        mpv_render_param params[] = {
-            { MPV_RENDER_PARAM_API_TYPE, MPV_RENDER_API_TYPE_OPENGL },
-            { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &(mpv_opengl_init_params) {
-                                                       .get_proc_address = get_proc_address_mpvs,
-                                                   } },
-            { MPV_RENDER_PARAM_ADVANCED_CONTROL, &(int) { 1 } },
-            { 0 }
-        };
-        result = mpv_render_context_create(&context->mpv_gl, context->mpv, params);
-        if (result != 0) {
-            obs_log(LOG_ERROR, "Failed to initialize mpvs GL context: %s", mpv_error_string(result));
-        } else {
-            mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
-            mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
-        }
+    gs_eparam_t* const param = gs_effect_get_param_by_name(effect, "image");
+    gs_effect_set_texture_srgb(param, context->video_buffer);
 
-        if (strlen(context->file_path) > 0) {
-            const char* cmd[] = { "loadfile", context->file_path, NULL };
-            result = mpv_command_async(context->mpv, 0, cmd);
-            if (result < 0) {
-                obs_log(LOG_ERROR, "Failed to load file: %s, %s", context->file_path, mpv_error_string(result));
-            }
-        }
-    }
+    gs_draw_sprite(context->video_buffer, 0, context->width, context->height);
 
+    gs_blend_state_pop();
+
+    if (!context->init)
+        mpvs_init(context);
+    if (context->init_failed)
+        return;
+
+    // mpv will set these flags in a separate thread
+    // from what I can tell initilazation, event handling and rendering
+    // should all happen in the same thread so we all do it here in the graphics thread
     pthread_mutex_lock(&context->mutex);
     bool need_redraw = context->redraw;
     bool need_poll = context->new_events;
@@ -204,89 +314,14 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
     if (need_poll)
         context->new_events = false;
     pthread_mutex_unlock(&context->mutex);
-    if (!context->file_loaded && strlen(context->file_path) > 0 && context->init) {
-        const char* cmd[] = { "loadfile", context->file_path, NULL };
-        int result = mpv_command_async(context->mpv, 0, cmd);
-        if (result < 0) {
-            obs_log(LOG_ERROR, "Failed to load file: %s, %s", context->file_path, mpv_error_string(result));
-        }
-        context->file_loaded = true;
-    }
 
-    if (need_poll) {
-        while (1) {
-            mpv_event* event = mpv_wait_event(context->mpv, 0);
-            if (event->event_id == MPV_EVENT_NONE)
-                break;
+    if (need_poll)
+        mpvs_handle_events(context);
 
-            if (event->event_id == MPV_EVENT_LOG_MESSAGE) {
-                mpv_event_log_message* msg = event->data;
-                if (msg->log_level < MPV_LOG_LEVEL_INFO)
-                    obs_log(LOG_INFO, "log: %s", msg->text);
-                continue;
-            }
-            obs_log(LOG_INFO, "event: %s", mpv_event_name(event->event_id));
-        }
-    }
 
-    if (need_redraw) {
-        GLuint currentProgram;
-        context->get_int_fn(GL_CURRENT_PROGRAM, (GLint*)&currentProgram);
+    if (context->init && need_redraw)
+        mpvs_render(context);
 
-//        gs_texture_t* rt = gs_get_render_target();
-//        gs_zstencil_t* zt = gs_get_zstencil_target();
-//        gs_effect_t* e = gs_get_effect();
-//        gs_shader_t* ps = gs_get_pixel_shader();
-//        gs_shader_t* vs = gs_get_vertex_shader();
-//        struct gs_rect rct = {0};
-//        gs_get_viewport(&rct);
-//        gs_blend_state_push();
-//        UNUSED_PARAMETER(e);
-//        gs_load_vertexshader(NULL);
-//        gs_load_pixelshader(NULL);
-//        mpv_render_frame_info inf;
-        mpv_render_param params[] = {
-            { MPV_RENDER_PARAM_OPENGL_FBO, &(mpv_opengl_fbo) {
-                                               .fbo = context->fbo,
-                                               .w = context->width,
-                                               .h = context->height,
-                                           } },
-            { MPV_RENDER_PARAM_NEXT_FRAME_INFO, &(mpv_render_frame_info) {
-                                                    .flags = 1,
-                                                    .target_time = 0,
-                                                }},
-            { 0 }
-        };
-        // See render_gl.h on what OpenGL environment mpvs expects, and
-        // other API details.
-        int result = mpv_render_context_render(context->mpv_gl, params);
-        if (result != 0) {
-            obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
-        }
-//        gs_blend_state_pop();
-//        gs_set_render_target(rt, zt);
-//        gs_set_viewport(rct.x, rct.y, rct.cx, rct.cy);;
-//        gs_load_pixelshader(ps);
-//        gs_load_vertexshader(vs);
-        context->use_program_fn(currentProgram);
-    }
-    /* obs keeps track of what program is loaded and will only call glUseProgram
-     * if the requested program is not already loaded. The problem is that MPV
-     * will load its own shader programs via OpenGL functions, which obs will
-     * be unaware of. We load this dumm shader here to make sure obs loads
-     * whatever program it needs to render the scene.
-     */
-
-    UNUSED_PARAMETER(effect);
-    gs_blend_state_push();
-    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-
-    gs_eparam_t* const param = gs_effect_get_param_by_name(effect, "image");
-    gs_effect_set_texture_srgb(param, context->texture);
-
-    gs_draw_sprite(context->texture, 0, context->width, context->height);
-
-    gs_blend_state_pop();
 }
 
 static void mpvs_source_tick(void* data, float seconds)
@@ -309,8 +344,7 @@ static uint32_t mpvs_source_getheight(void* data)
 
 static void mpvs_source_defaults(obs_data_t* settings)
 {
-    obs_data_set_default_int(settings, "width", 400);
-    obs_data_set_default_int(settings, "height", 400);
+    UNUSED_PARAMETER(settings);
 }
 
 static void mpvs_play_pause(void* data, bool pause)
