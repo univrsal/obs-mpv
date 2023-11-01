@@ -20,22 +20,27 @@
 #    define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_INFO
 #endif
 
-struct mpvs_source {
+struct mpv_source {
+    // basic source stuff
     uint32_t width;
     uint32_t height;
     obs_source_t* src;
+    bool osc; // mpv on screen controller
+    const char* file_path;
+
+    // mpv handles/thread stuff
     mpv_handle* mpv;
     mpv_render_context* mpv_gl;
     gs_texture_t* video_buffer;
-    pthread_mutex_t mutex;
-    const char* file_path;
+    pthread_mutex_t mpv_event_mutex;
     GLuint fbo;
-    bool osc; // mpv on screen controller
     bool redraw;
     bool init;
     bool init_failed;
     bool new_events;
     bool file_loaded;
+
+    // gl functions
     PFNGLGENFRAMEBUFFERSPROC _glGenFramebuffers;
     PFNGLBINDFRAMEBUFFERPROC _glBindFramebuffer;
     PFNGLDELETEFRAMEBUFFERSPROC _glDeleteFramebuffers;
@@ -73,23 +78,32 @@ struct mpvs_source {
             obs_log(LOG_ERROR, "Failed to set mpv property %s: %s", name, mpv_error_string(__mpv_result)); \
     } while (0)
 
+#define MPV_SET_OPTION(name, val)                                                                        \
+    do {                                                                                                   \
+        if (!context->init)                                                                                \
+            break;                                                                                         \
+        int __mpv_result = mpv_set_option_string(context->mpv, name, val);                               \
+        if (__mpv_result < 0)                                                                              \
+            obs_log(LOG_ERROR, "Failed to set mpv option %s: %s", name, mpv_error_string(__mpv_result)); \
+    } while (0)
+
 static void on_mpvs_render_events(void* ctx)
 {
-    struct mpvs_source* context = ctx;
-    pthread_mutex_lock(&context->mutex);
+    struct mpv_source* context = ctx;
+    pthread_mutex_lock(&context->mpv_event_mutex);
     uint64_t flags = mpv_render_context_update(context->mpv_gl);
     if (flags & MPV_RENDER_UPDATE_FRAME) {
         context->redraw = true;
     }
-    pthread_mutex_unlock(&context->mutex);
+    pthread_mutex_unlock(&context->mpv_event_mutex);
 }
 
 static void handle_mpvs_events(void* ctx)
 {
-    struct mpvs_source* context = ctx;
-    pthread_mutex_lock(&context->mutex);
+    struct mpv_source* context = ctx;
+    pthread_mutex_lock(&context->mpv_event_mutex);
     context->new_events = true;
-    pthread_mutex_unlock(&context->mutex);
+    pthread_mutex_unlock(&context->mpv_event_mutex);
 }
 
 static void* get_proc_address_mpvs(void* ctx, const char* name)
@@ -109,7 +123,7 @@ static void mpv_audio_callback(void *data, int samples, int sample_format, void 
 
 /* Misc functions ---------------------------------------------------------- */
 
-static inline void mpvs_load_file(struct mpvs_source* context)
+static inline void mpvs_load_file(struct mpv_source* context)
 {
     if (strlen(context->file_path) > 0) {
         const char* cmd[] = { "loadfile", context->file_path, NULL };
@@ -120,7 +134,7 @@ static inline void mpvs_load_file(struct mpvs_source* context)
     }
 }
 
-static inline void mpvs_generate_texture(struct mpvs_source* context)
+static inline void mpvs_generate_texture(struct mpv_source* context)
 {
     if (context->video_buffer) {
         gs_texture_destroy(context->video_buffer);
@@ -161,7 +175,7 @@ static inline int mpvs_mpv_log_level_to_obs(mpv_log_level lvl)
     }
 }
 
-static inline void mpvs_handle_events(struct mpvs_source* context)
+static inline void mpvs_handle_events(struct mpv_source* context)
 {
     while (1) {
         mpv_event* event = mpv_wait_event(context->mpv, 0);
@@ -202,7 +216,7 @@ static inline void mpvs_handle_events(struct mpvs_source* context)
     }
 }
 
-static inline void mpvs_render(struct mpvs_source* context)
+static inline void mpvs_render(struct mpv_source* context)
 {
     // make sure that we restore the current program after mpv is done
     // as obs will not load the progam because it internally keeps track
@@ -232,7 +246,7 @@ static inline void mpvs_render(struct mpvs_source* context)
     context->_glUseProgram(currentProgram);
 }
 
-static void mpvs_init(struct mpvs_source* context)
+static void mpvs_init(struct mpv_source* context)
 {
     if (context->init_failed)
         return;
@@ -282,7 +296,7 @@ static const char* mpvs_source_get_name(void* unused)
 
 static void mpvs_source_update(void* data, obs_data_t* settings)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     const char* path = obs_data_get_string(settings, "file");
     context->osc = obs_data_get_bool(settings, "osc");
     if (!context->file_path || strcmp(path, context->file_path) != 0) {
@@ -297,7 +311,7 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
 
 static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
 {
-    struct mpvs_source* context = bzalloc(sizeof(struct mpvs_source));
+    struct mpv_source* context = bzalloc(sizeof(struct mpv_source));
     context->width = 512;
     context->height = 512;
     context->src = source;
@@ -309,7 +323,7 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)eglGetProcAddress("glGetIntegerv");
     context->_glUseProgram = (PFNGLUSEPROGRAMPROC)eglGetProcAddress("glUseProgram");
 
-    pthread_mutex_init_value(&context->mutex);
+    pthread_mutex_init_value(&context->mpv_event_mutex);
 
     // generates a default texture with size 512x512, mpv will tell us the acutal size later
     obs_enter_graphics();
@@ -322,7 +336,7 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
 
 static void mpvs_source_destroy(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     mpv_render_context_free(context->mpv_gl);
     mpv_destroy(context->mpv);
 
@@ -359,7 +373,7 @@ static obs_properties_t* mpvs_source_properties(void* unused)
 
 static void mpvs_source_render(void* data, gs_effect_t* effect)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
@@ -378,14 +392,14 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
     // mpv will set these flags in a separate thread
     // from what I can tell initilazation, event handling and rendering
     // should all happen in the same thread so we all do it here in the graphics thread
-    pthread_mutex_lock(&context->mutex);
+    pthread_mutex_lock(&context->mpv_event_mutex);
     bool need_redraw = context->redraw;
     bool need_poll = context->new_events;
     if (need_redraw)
         context->redraw = false;
     if (need_poll)
         context->new_events = false;
-    pthread_mutex_unlock(&context->mutex);
+    pthread_mutex_unlock(&context->mpv_event_mutex);
 
     if (need_poll)
         mpvs_handle_events(context);
@@ -396,13 +410,13 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
 
 static uint32_t mpvs_source_getwidth(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     return context->width;
 }
 
 static uint32_t mpvs_source_getheight(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     return context->height;
 }
 
@@ -410,37 +424,37 @@ static uint32_t mpvs_source_getheight(void* data)
 
 static void mpvs_play_pause(void* data, bool pause)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     mpv_set_property_string(context->mpv, "pause", pause ? "yes" : "no");
 }
 
 static void mpvs_restart(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     MPV_SEND_COMMAND_ASYNC("seek", "0", "absolute");
 }
 
 static void mpvs_stop(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     MPV_SEND_COMMAND_ASYNC("stop");
 }
 
 static void mpvs_playlist_next(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     MPV_SEND_COMMAND_ASYNC("playlist-next");
 }
 
 static void mpvs_playlist_prev(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     MPV_SEND_COMMAND_ASYNC("playlist-prev");
 }
 
 static int64_t mpvs_get_duration(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     double duration;
     int error;
 
@@ -455,7 +469,7 @@ static int64_t mpvs_get_duration(void* data)
 
 static int64_t mpvs_get_time(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     double playback_time;
     int error;
 
@@ -470,7 +484,7 @@ static int64_t mpvs_get_time(void* data)
 
 static void mpvs_set_time(void* data, int64_t ms)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     double time = ms / 1000.0;
     struct dstr str;
     dstr_init(&str);
@@ -481,7 +495,7 @@ static void mpvs_set_time(void* data, int64_t ms)
 
 static enum obs_media_state mpvs_get_state(void* data)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     int error = 0, paused = 0, core_idle = 0, idle = 0;
     MPV_GET_PROP_FLAG("pause", paused);
     MPV_GET_PROP_FLAG("core-idle", core_idle);
@@ -503,7 +517,7 @@ static enum obs_media_state mpvs_get_state(void* data)
 static void mpvs_mouse_click(void* data, const struct obs_mouse_event* event,
     int32_t type, bool mouse_up, uint32_t click_count)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     UNUSED_PARAMETER(context);
     UNUSED_PARAMETER(event);
     UNUSED_PARAMETER(type);
@@ -545,7 +559,7 @@ static void mpvs_mouse_click(void* data, const struct obs_mouse_event* event,
 static void mpvs_mouse_move(void* data, const struct obs_mouse_event* event,
     bool mouse_leave)
 {
-    struct mpvs_source* context = data;
+    struct mpv_source* context = data;
     UNUSED_PARAMETER(mouse_leave);
     // convert position to string
     char pos[32];
