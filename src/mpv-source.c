@@ -47,6 +47,11 @@ struct mpv_source {
     PFNGLFRAMEBUFFERTEXTURE2DPROC _glFramebufferTexture2D;
     PFNGLGETINTEGERVPROC _glGetIntegerv;
     PFNGLUSEPROGRAMPROC _glUseProgram;
+
+    // jack source for audio
+    obs_source_t* jack_source;
+    char* jack_port_name; // name of the jack capture source
+    char* jack_client_name; // name of the jack client mpv opens for audio output
 };
 
 /* MPV specific functions -------------------------------------------------- */
@@ -279,6 +284,14 @@ static void mpvs_init(struct mpv_source* context)
         // at whatever frame rate obs is using
         MPV_SET_PROP_STR("video-timing-offset", "0");
 
+        // MPV does not offer any way to directly get the audio data so
+        // we use a jack source to get the audio data and make it available to OBS
+        // otherwise mpv just outputs to the desktop audio device
+        MPV_SET_PROP_STR("ao", "jack");
+        MPV_SET_PROP_STR("jack-port", context->jack_port_name);
+        MPV_SET_PROP_STR("jack-name", context->jack_client_name);
+
+
         mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
         mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
     }
@@ -325,6 +338,20 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
 
     pthread_mutex_init_value(&context->mpv_event_mutex);
 
+    struct dstr str;
+    dstr_init(&str);
+    dstr_catf(&str, "%s audio", obs_source_get_name(context->src));
+
+    // defaults are fine
+    obs_data_t* data = obs_data_create();
+    context->jack_source = obs_source_create("jack_output_capture", str.array, data, NULL);
+    obs_data_release(data);
+    dstr_insert(&str, 0, "OBS Studio: "); // all jack sources are prefixed with this
+    context->jack_port_name = bstrdup(str.array);
+    dstr_printf(&str, "obs-mpv: %s", obs_source_get_name(context->src));
+    context->jack_client_name = bstrdup(str.array);
+    dstr_free(&str);
+
     // generates a default texture with size 512x512, mpv will tell us the acutal size later
     obs_enter_graphics();
     mpvs_generate_texture(context);
@@ -348,6 +375,9 @@ static void mpvs_source_destroy(void* data)
     }
     obs_leave_graphics();
 
+    obs_source_release(context->jack_source);
+    bfree(context->jack_port_name);
+    bfree(context->jack_client_name);
     bfree(data);
 }
 
@@ -570,10 +600,19 @@ static void mpvs_mouse_move(void* data, const struct obs_mouse_event* event,
     MPV_SEND_COMMAND_ASYNC("mouse", pos, pos2);
 }
 
+
+static void mpvs_enum_active_sources(void *data,
+                obs_source_enum_proc_t enum_callback,
+                void *param)
+{
+    struct mpv_source* context = data;
+    enum_callback(context->src, context->jack_source, param);
+}
+
 struct obs_source_info mpv_source_info = {
     .id = "mpvs_source",
     .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CONTROLLABLE_MEDIA | OBS_SOURCE_INTERACTION,
+    .output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CONTROLLABLE_MEDIA | OBS_SOURCE_INTERACTION,
     .create = mpvs_source_create,
     .destroy = mpvs_source_destroy,
     .update = mpvs_source_update,
@@ -583,6 +622,7 @@ struct obs_source_info mpv_source_info = {
     .video_render = mpvs_source_render,
     .get_properties = mpvs_source_properties,
     .icon_type = OBS_ICON_TYPE_MEDIA,
+    .enum_active_sources = mpvs_enum_active_sources,
 
     .media_play_pause = mpvs_play_pause,
     .media_restart = mpvs_restart,
