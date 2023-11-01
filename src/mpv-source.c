@@ -151,14 +151,9 @@ static inline void mpvs_render(struct mpvs_source* context)
 
     gs_blend_state_push();
 
-    uint64_t start = os_gettime_ns();
     int result = mpv_render_context_render(context->mpv_gl, params);
     if (result != 0) {
         obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
-    } else {
-        uint64_t end = os_gettime_ns();
-        // print the time it took to render the frame in ms
-        obs_log(LOG_INFO, "render time: %fms", (end - start) / 1000000.0);
     }
 
     gs_blend_state_pop();
@@ -195,6 +190,9 @@ static void mpvs_init(struct mpvs_source* context)
     if (result != 0) {
         obs_log(LOG_ERROR, "Failed to initialize mpvs GL context: %s", mpv_error_string(result));
     } else {
+        // By default mpv will wait in the render callback to exactly hit
+        // whatever framerate the playing video has, but we want to render
+        // at whatever frame rate obs is using
         result = mpv_set_property_string(context->mpv, "video-timing-offset", "0");
         if (result != 0)
             obs_log(LOG_ERROR, "Failed to set video-timing-offset: %s", mpv_error_string(result));
