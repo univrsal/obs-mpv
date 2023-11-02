@@ -625,7 +625,7 @@ static void mpvs_enum_active_sources(void* data,
 struct obs_source_info mpv_source_info = {
     .id = "mpvs_source",
     .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CONTROLLABLE_MEDIA | OBS_SOURCE_INTERACTION,
+    .output_flags = OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_VIDEO| OBS_SOURCE_CONTROLLABLE_MEDIA | OBS_SOURCE_INTERACTION,
     .create = mpvs_source_create,
     .destroy = mpvs_source_destroy,
     .update = mpvs_source_update,
