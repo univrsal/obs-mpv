@@ -39,6 +39,7 @@ struct mpv_source {
     bool init_failed;
     bool new_events;
     bool file_loaded;
+    volatile long media_state;
 
     // gl functions
     PFNGLGENFRAMEBUFFERSPROC _glGenFramebuffers;
@@ -203,6 +204,44 @@ static inline int mpvs_mpv_log_level_to_obs(mpv_log_level lvl)
     }
 }
 
+static inline void mpvs_handle_property_change(struct mpv_source* context, mpv_event_property* prop)
+{
+    long media_state = os_atomic_load_long(&context->media_state);
+    if (strcmp(prop->name, "core-idle") == 0) {
+        if (prop->format == MPV_FORMAT_FLAG) {
+            if (*(unsigned*)prop->data && media_state == OBS_MEDIA_STATE_PLAYING)
+                os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_BUFFERING);
+            else
+                os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PLAYING);
+        }
+    }
+    else if (strcmp(prop->name, "mute") == 0) {
+        if(prop->format == MPV_FORMAT_FLAG)
+            obs_source_set_muted(context->jack_source, *(unsigned*)prop->data);
+    }
+    else if (strcmp(prop->name, "pause") == 0) {
+        if(prop->format == MPV_FORMAT_FLAG) {
+            if((bool)*(unsigned*)prop->data)
+                os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PAUSED);
+            else
+                os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PLAYING);
+        }
+    }
+    else if(strcmp(prop->name, "paused-for-cache") == 0) {
+        if(prop->format == MPV_FORMAT_FLAG) {
+            if(*(unsigned*)prop->data && media_state == OBS_MEDIA_STATE_PLAYING)
+                obs_log(LOG_WARNING, "[%s] Your network is slow or stuck, please wait a bit", obs_source_get_name(context->src));
+        }
+    }
+    else if(strcmp(prop->name, "idle-active") == 0) {
+        if(prop->format == MPV_FORMAT_FLAG) {
+            if(*(unsigned*)prop->data) {
+                os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_ENDED);
+            }
+        }
+    }
+}
+
 static inline void mpvs_handle_events(struct mpv_source* context)
 {
     while (1) {
@@ -223,15 +262,10 @@ static inline void mpvs_handle_events(struct mpv_source* context)
             }
             continue;
         }
-
-        if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
-            mpv_event_property* prop = (mpv_event_property*)event->data;
-            if (strcmp(prop->name, "audio-data") == 0) {
-                os_breakpoint();
-            }
+        else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+            mpvs_handle_property_change(context, (mpv_event_property*) event->data);
         }
-
-        if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
+        else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
             // Retrieve the new video size.
             int64_t w, h;
             if (mpv_get_property(context->mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 && mpv_get_property(context->mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 && w > 0 && h > 0) {
@@ -239,6 +273,16 @@ static inline void mpvs_handle_events(struct mpv_source* context)
                 context->height = h;
                 mpvs_generate_texture(context);
             }
+        }
+        else if (event->event_id == MPV_EVENT_START_FILE) {
+            os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_OPENING);
+        }
+        else if (event->event_id == MPV_EVENT_FILE_LOADED) {
+            context->file_loaded= true;
+            os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PLAYING);
+        }
+        else if (event->event_id == MPV_EVENT_END_FILE) {
+            os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_ENDED);
         }
         if (event->error < 0) {
             obs_log(LOG_ERROR, "mpv command %s failed: %s", mpv_event_name(event->event_id), mpv_error_string(event->error));
@@ -308,6 +352,13 @@ static void mpvs_init(struct mpv_source* context)
         mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
         mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
     }
+
+    mpv_observe_property(context->mpv, 0, "playback-time", MPV_FORMAT_DOUBLE);
+    mpv_observe_property(context->mpv, 0, "mute", MPV_FORMAT_FLAG);
+    mpv_observe_property(context->mpv, 0, "core-idle", MPV_FORMAT_FLAG);
+    mpv_observe_property(context->mpv, 0, "idle-active", MPV_FORMAT_FLAG);
+    mpv_observe_property(context->mpv, 0, "pause", MPV_FORMAT_FLAG);
+    mpv_observe_property(context->mpv, 0, "paused-for-cache", MPV_FORMAT_FLAG);
 
     mpvs_load_file(context);
 }
@@ -485,7 +536,7 @@ static void mpvs_play_pause(void* data, bool pause)
 static void mpvs_restart(void* data)
 {
     struct mpv_source* context = data;
-    MPV_SEND_COMMAND_ASYNC("seek", "0", "absolute");
+    mpvs_load_file(context);
 }
 
 static void mpvs_stop(void* data)
@@ -533,7 +584,8 @@ static int64_t mpvs_get_time(void* data)
     double playback_time;
     int error;
 
-    error = mpv_get_property(context->mpv, "time-pos", MPV_FORMAT_DOUBLE, &playback_time);
+    // playback-time does the same thing as time-pos but works for streaming media
+    error = mpv_get_property(context->mpv, "playback-time", MPV_FORMAT_DOUBLE, &playback_time);
 
     if (error < 0) {
         obs_log(LOG_ERROR, "Error getting playback time: %s\n", mpv_error_string(error));
@@ -556,20 +608,7 @@ static void mpvs_set_time(void* data, int64_t ms)
 static enum obs_media_state mpvs_get_state(void* data)
 {
     struct mpv_source* context = data;
-    int error = 0, paused = 0, core_idle = 0, idle = 0;
-    MPV_GET_PROP_FLAG("pause", paused);
-    MPV_GET_PROP_FLAG("core-idle", core_idle);
-    MPV_GET_PROP_FLAG("idle-active", idle);
-
-    if (paused)
-        return OBS_MEDIA_STATE_PAUSED;
-    if (core_idle)
-        return OBS_MEDIA_STATE_BUFFERING;
-    if (idle)
-        return OBS_MEDIA_STATE_ENDED;
-    if (!paused)
-        return OBS_MEDIA_STATE_PLAYING;
-    return OBS_MEDIA_STATE_NONE;
+    return (enum obs_media_state) os_atomic_load_long(&context->media_state);
 }
 
 /* OBS interaction functions ----------------------------------------------- */
@@ -629,6 +668,51 @@ static void mpvs_mouse_move(void* data, const struct obs_mouse_event* event,
     MPV_SEND_COMMAND_ASYNC("mouse", pos, pos2);
 }
 
+static void mpvs_key_click(void *data, const struct obs_key_event *event,
+          bool key_up)
+{
+    struct mpv_source* context = data;
+    struct dstr key_combo;
+    dstr_init(&key_combo);
+    const bool mouse_left = event->modifiers & INTERACT_MOUSE_LEFT;
+    const bool mouse_right = event->modifiers & INTERACT_MOUSE_RIGHT;
+    const bool mouse_middle = event->modifiers & INTERACT_MOUSE_MIDDLE;
+    const bool is_mouse_combo = mouse_left || mouse_right || mouse_middle;
+
+    const char* combo = (!!event->text || is_mouse_combo) ? "+" : "";
+    if (event->modifiers & INTERACT_SHIFT_KEY)
+        dstr_catf(&key_combo, "Shift%s", combo);
+    if (event->modifiers & INTERACT_CONTROL_KEY)
+        dstr_catf(&key_combo, "Ctrl%s", combo);
+    if (event->modifiers & INTERACT_ALT_KEY)
+        dstr_catf(&key_combo, "Alt%s", combo);
+    if (event->modifiers & INTERACT_COMMAND_KEY)
+        dstr_catf(&key_combo, "Meta%s", combo);
+
+    if (is_mouse_combo) {
+        if (mouse_left)
+            dstr_catf(&key_combo, "MBTN_LEFT");
+        else if (mouse_right)
+            dstr_catf(&key_combo, "MBTN_RIGHT");
+        else if (mouse_middle)
+            dstr_catf(&key_combo, "MBTN_MIDDLE");
+    } else if (event->text) {
+        dstr_catf(&key_combo, "%s", event->text);
+    }
+
+    if (key_combo.len == 0)
+        return;
+
+    obs_log(LOG_DEBUG, "MPV key combo: %s", key_combo.array);
+
+    if (key_up) {
+        MPV_SEND_COMMAND_ASYNC("keyup", key_combo.array);
+    } else {
+        MPV_SEND_COMMAND_ASYNC("keydown", key_combo.array);
+    }
+    dstr_free(&key_combo);
+}
+
 static void mpvs_enum_active_sources(void* data,
     obs_source_enum_proc_t enum_callback,
     void* param)
@@ -664,4 +748,5 @@ struct obs_source_info mpv_source_info = {
 
     .mouse_click = mpvs_mouse_click,
     .mouse_move = mpvs_mouse_move,
+    .key_click = mpvs_key_click,
 };
