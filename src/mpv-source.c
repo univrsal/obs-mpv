@@ -129,6 +129,28 @@ static void mpv_audio_callback(void* data, int samples, int sample_format, void*
 
 /* Misc functions ---------------------------------------------------------- */
 
+static inline void mpvs_set_mpv_properties(struct mpv_source* context)
+{
+    // By default mpv will wait in the render callback to exactly hit
+    // whatever framerate the playing video has, but we want to render
+    // at whatever frame rate obs is using
+    MPV_SET_PROP_STR("video-timing-offset", "0");
+
+    // MPV does not offer any way to directly get the audio data so
+    // we use a jack source to get the audio data and make it available to OBS
+    // otherwise mpv just outputs to the desktop audio device
+    MPV_SET_PROP_STR("ao", "jack");
+    MPV_SET_PROP_STR("jack-port", context->jack_port_name);
+    MPV_SET_PROP_STR("jack-name", context->jack_client_name);
+    MPV_SET_PROP_STR("audio-channels", "stereo"); // TODO: allow 5.1 etc.
+
+    MPV_SET_PROP_STR("osc", context->osc ? "yes" : "no");
+    MPV_SET_PROP_STR("input-cursor", context->osc ? "yes" : "no");
+    MPV_SET_PROP_STR("input-vo-keyboard", context->osc ? "yes" : "no");
+    MPV_SET_PROP_STR("osd-on-seek", context->osc ? "bar" : "no");
+
+}
+
 static inline void mpvs_load_file(struct mpv_source* context)
 {
     if (strlen(context->file_path) > 0) {
@@ -218,7 +240,9 @@ static inline void mpvs_handle_events(struct mpv_source* context)
                 mpvs_generate_texture(context);
             }
         }
-        obs_log(LOG_DEBUG, "event: %s", mpv_event_name(event->event_id));
+        if (event->error < 0) {
+            obs_log(LOG_ERROR, "mpv command %s failed: %s", mpv_event_name(event->event_id), mpv_error_string(event->error));
+        }
     }
 }
 
@@ -280,18 +304,7 @@ static void mpvs_init(struct mpv_source* context)
     if (result != 0) {
         obs_log(LOG_ERROR, "Failed to initialize mpvs GL context: %s", mpv_error_string(result));
     } else {
-        // By default mpv will wait in the render callback to exactly hit
-        // whatever framerate the playing video has, but we want to render
-        // at whatever frame rate obs is using
-        MPV_SET_PROP_STR("video-timing-offset", "0");
-
-        // MPV does not offer any way to directly get the audio data so
-        // we use a jack source to get the audio data and make it available to OBS
-        // otherwise mpv just outputs to the desktop audio device
-        MPV_SET_PROP_STR("ao", "jack");
-        MPV_SET_PROP_STR("jack-port", context->jack_port_name);
-        MPV_SET_PROP_STR("jack-name", context->jack_client_name);
-
+        mpvs_set_mpv_properties(context);
         mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
         mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
     }
@@ -318,8 +331,7 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
         if (context->init)
             mpvs_load_file(context);
     }
-
-    MPV_SET_PROP_STR("osc", context->osc ? "yes" : "no");
+    mpvs_set_mpv_properties(context);
 }
 
 static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
@@ -342,10 +354,15 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     dstr_init(&str);
     dstr_catf(&str, "%s audio", obs_source_get_name(context->src));
 
-    // defaults are fine
-    obs_data_t* data = obs_data_create();
-    context->jack_source = obs_source_create("jack_output_capture", str.array, data, NULL);
-    obs_data_release(data);
+    // so for some reason the source already exists every other time you start obs
+    // so just reuse it
+    context->jack_source = obs_get_source_by_name(str.array);
+    if (!context->jack_source) {
+        // defaults are fine
+        obs_data_t* data = obs_data_create();
+        context->jack_source = obs_source_create("jack_output_capture", str.array, data, NULL);
+        obs_data_release(data);
+    }
     dstr_insert(&str, 0, "OBS Studio: "); // all jack sources are prefixed with this
     context->jack_port_name = bstrdup(str.array);
     dstr_printf(&str, "obs-mpv: %s", obs_source_get_name(context->src));
@@ -374,7 +391,6 @@ static void mpvs_source_destroy(void* data)
         gs_texture_destroy(context->video_buffer);
     }
     obs_leave_graphics();
-
     obs_source_release(context->jack_source);
     bfree(context->jack_port_name);
     bfree(context->jack_client_name);
@@ -610,7 +626,6 @@ static void mpvs_mouse_move(void* data, const struct obs_mouse_event* event,
     snprintf(pos, sizeof(pos), "%d", event->x);
     char pos2[32];
     snprintf(pos2, sizeof(pos2), "%d", event->y);
-    obs_log(LOG_INFO, "%i %i", event->x, event->y);
     MPV_SEND_COMMAND_ASYNC("mouse", pos, pos2);
 }
 
