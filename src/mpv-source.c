@@ -460,6 +460,9 @@ static uint32_t mpvs_source_getheight(void* data)
 static void mpvs_play_pause(void* data, bool pause)
 {
     struct mpv_source* context = data;
+
+    if (!context->mpv)
+        return;
     mpv_set_property_string(context->mpv, "pause", pause ? "yes" : "no");
 }
 
@@ -490,6 +493,9 @@ static void mpvs_playlist_prev(void* data)
 static int64_t mpvs_get_duration(void* data)
 {
     struct mpv_source* context = data;
+    if (!context->mpv)
+        return 0;
+
     double duration;
     int error;
 
@@ -505,6 +511,9 @@ static int64_t mpvs_get_duration(void* data)
 static int64_t mpvs_get_time(void* data)
 {
     struct mpv_source* context = data;
+    if (!context->mpv)
+        return 0;
+
     double playback_time;
     int error;
 
