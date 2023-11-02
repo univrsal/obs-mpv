@@ -2,6 +2,7 @@
 /*
 
 # Except for default project files
+!screenshot.png
 !/deps
 !/.github
 !/build-aux
