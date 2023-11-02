@@ -404,6 +404,10 @@ static obs_properties_t* mpvs_source_properties(void* unused)
 static void mpvs_source_render(void* data, gs_effect_t* effect)
 {
     struct mpv_source* context = data;
+
+    const bool previous = gs_framebuffer_srgb_enabled();
+    gs_enable_framebuffer_srgb(true);
+
     gs_blend_state_push();
     gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 
@@ -413,6 +417,7 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
     gs_draw_sprite(context->video_buffer, 0, context->width, context->height);
 
     gs_blend_state_pop();
+    gs_enable_framebuffer_srgb(previous);
 
     if (!context->init)
         mpvs_init(context);
