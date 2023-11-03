@@ -167,6 +167,35 @@ static void* get_proc_address_mpvs(void* ctx, const char* name)
     return addr;
 }
 
+static inline const char* mpvs_obs_channel_layout_to_mpv(uint32_t* sample_rate)
+{
+    struct obs_audio_info info = {0};
+    if (obs_get_audio_info(&info)) {
+        *sample_rate = info.samples_per_sec;
+        switch (info.speakers) {
+            case SPEAKERS_MONO:
+                return "mono";
+            default:
+            case SPEAKERS_UNKNOWN:
+            case SPEAKERS_STEREO:
+                return "stereo";
+            case SPEAKERS_2POINT1:
+                return "2.1";
+            case SPEAKERS_4POINT0:
+                return "4.0";
+            case SPEAKERS_4POINT1:
+                return "4.1";
+            case SPEAKERS_5POINT1:
+                return "5.1";
+            case SPEAKERS_7POINT1:
+                return "7.1";
+        }
+    }
+    *sample_rate = 48000;
+    return "stereo";
+}
+
+
 /* Misc functions ---------------------------------------------------------- */
 
 static inline void mpvs_set_mpv_properties(struct mpv_source* context)
@@ -179,10 +208,17 @@ static inline void mpvs_set_mpv_properties(struct mpv_source* context)
     // MPV does not offer any way to directly get the audio data so
     // we use a jack source to get the audio data and make it available to OBS
     // otherwise mpv just outputs to the desktop audio device
+    uint32_t sample_rate = 0;
     MPV_SET_PROP_STR("ao", "jack");
     MPV_SET_PROP_STR("jack-port", context->jack_port_name);
     MPV_SET_PROP_STR("jack-name", context->jack_client_name);
-    MPV_SET_PROP_STR("audio-channels", "stereo"); // TODO: allow 5.1 etc.
+    MPV_SET_PROP_STR("audio-channels", mpvs_obs_channel_layout_to_mpv(&sample_rate));
+
+    struct dstr str;
+    dstr_init(&str);
+    dstr_printf(&str, "%d", sample_rate);
+    MPV_SET_PROP_STR("audio-samplerate", str.array);
+    dstr_free(&str);
 
     MPV_SET_PROP_STR("osc", context->osc ? "yes" : "no");
     MPV_SET_PROP_STR("input-cursor", context->osc ? "yes" : "no");
