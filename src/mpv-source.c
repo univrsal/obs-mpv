@@ -9,6 +9,9 @@
 #include <util/dstr.h>
 #include <util/platform.h>
 #include <util/threading.h>
+#include <inttypes.h>
+
+#define util_min(a, b) ((a) < (b) ? (a) : (b))
 
 #define MPV_VERBOSE_LOGGING 0
 
@@ -19,6 +22,30 @@
 #    define MPV_LOG_LEVEL "trace"
 #    define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_INFO
 #endif
+
+enum mpv_track_type {
+    MPV_TRACK_TYPE_AUDIO,
+    MPV_TRACK_TYPE_VIDEO,
+    MPV_TRACK_TYPE_SUB,
+};
+
+struct mpv_track_info {
+    int64_t id;
+    enum mpv_track_type type;
+    char* lang;
+    char* title;
+    char* decoder_desc;
+    bool is_default;
+    bool is_selected;
+    int64_t demux_w;
+    int64_t demux_h;
+    int64_t demux_sample_rate;
+    int64_t demux_bitrate;
+    double pixel_aspect;
+    double fps;
+
+    enum speaker_layout demux_channels;
+};
 
 struct mpv_source {
     // basic source stuff
@@ -41,6 +68,16 @@ struct mpv_source {
     bool file_loaded;
     volatile long media_state;
 
+    DARRAY(struct mpv_track_info)
+    tracks;
+    int audio_tracks;
+    int video_tracks;
+    int sub_tracks;
+
+    int current_audio_track;
+    int current_video_track;
+    int current_sub_track;
+
     // gl functions
     PFNGLGENFRAMEBUFFERSPROC _glGenFramebuffers;
     PFNGLBINDFRAMEBUFFERPROC _glBindFramebuffer;
@@ -55,6 +92,16 @@ struct mpv_source {
     char* jack_client_name; // name of the jack client mpv opens for audio output
 };
 
+static inline void destroy_mpv_track_info(struct mpv_track_info* track)
+{
+    bfree(track->lang);
+    bfree(track->title);
+    bfree(track->decoder_desc);
+    track->lang = NULL;
+    track->title = NULL;
+    track->decoder_desc = NULL;
+}
+
 /* MPV specific functions -------------------------------------------------- */
 
 #define MPV_SEND_COMMAND_ASYNC(...)                                                                   \
@@ -65,6 +112,7 @@ struct mpv_source {
         if (__mpv_result != 0)                                                                        \
             obs_log(LOG_ERROR, "Failed to run mpv command: %s", mpv_error_string(__mpv_result));      \
     } while (0)
+
 
 #define MPV_GET_PROP_FLAG(name, out)                                                                       \
     do {                                                                                                   \
@@ -119,20 +167,11 @@ static void* get_proc_address_mpvs(void* ctx, const char* name)
     return addr;
 }
 
-static void mpv_audio_callback(void* data, int samples, int sample_format, void* audio_data)
-{
-    struct mpv_source* context = data;
-    UNUSED_PARAMETER(samples);
-    UNUSED_PARAMETER(sample_format);
-    UNUSED_PARAMETER(context);
-    UNUSED_PARAMETER(audio_data);
-}
-
 /* Misc functions ---------------------------------------------------------- */
 
 static inline void mpvs_set_mpv_properties(struct mpv_source* context)
 {
-    // By default mpv will wait in the render callback to exactly hit
+    // By selected mpv will wait in the render callback to exactly hit
     // whatever framerate the playing video has, but we want to render
     // at whatever frame rate obs is using
     MPV_SET_PROP_STR("video-timing-offset", "0");
@@ -149,7 +188,6 @@ static inline void mpvs_set_mpv_properties(struct mpv_source* context)
     MPV_SET_PROP_STR("input-cursor", context->osc ? "yes" : "no");
     MPV_SET_PROP_STR("input-vo-keyboard", context->osc ? "yes" : "no");
     MPV_SET_PROP_STR("osd-on-seek", context->osc ? "bar" : "no");
-
 }
 
 static inline void mpvs_load_file(struct mpv_source* context)
@@ -204,6 +242,152 @@ static inline int mpvs_mpv_log_level_to_obs(mpv_log_level lvl)
     }
 }
 
+static inline void mpvs_init_track(struct mpv_source* context, struct mpv_track_info* info, mpv_node* node)
+{
+    mpv_node* value = NULL;
+#define MPVS_SET_TRACK_INFO_STRING(id, name) \
+    do {                                                       \
+        if (strcmp(node->u.list->keys[i], id) == 0) { \
+            if (value->format == MPV_FORMAT_STRING)            \
+                info->name = bstrdup(value->u.string);         \
+        }                                                      \
+    } while (0)
+
+#define MPVS_SET_TRACK_INFO(id, name, t, val)                  \
+    do {                                                       \
+        if (strcmp(node->u.list->keys[i], id) == 0) { \
+            if (value->format == t)                            \
+                info->name = value->u.val;                     \
+        }                                                      \
+    } while (0)
+
+#define MPVS_SET_TRACK_INFO_INT64(id, name) \
+    MPVS_SET_TRACK_INFO(id, name, MPV_FORMAT_INT64, int64)
+#define MPVS_SET_TRACK_INFO_DOUBLE(id, name) \
+    MPVS_SET_TRACK_INFO(id, name, MPV_FORMAT_DOUBLE, double_)
+
+    for (int i = 0; i < node->u.list->num; i++) {
+        value = &node->u.list->values[i];
+        if (!value)
+            continue;
+        MPVS_SET_TRACK_INFO_INT64("id", id);
+        MPVS_SET_TRACK_INFO_STRING("lang", lang);
+        MPVS_SET_TRACK_INFO_STRING("title", title);
+        MPVS_SET_TRACK_INFO_STRING("decoder-desc", decoder_desc);
+        MPVS_SET_TRACK_INFO_INT64("default", is_default);
+        MPVS_SET_TRACK_INFO_INT64("selected", is_selected);
+        MPVS_SET_TRACK_INFO_INT64("demux-w", demux_w);
+        MPVS_SET_TRACK_INFO_INT64("demux-h", demux_h);
+        MPVS_SET_TRACK_INFO_INT64("demux-samplerate", demux_sample_rate);
+        MPVS_SET_TRACK_INFO_INT64("demux-bitrate", demux_bitrate);
+        MPVS_SET_TRACK_INFO_DOUBLE("demux-ar", pixel_aspect);
+        MPVS_SET_TRACK_INFO_DOUBLE("demux-fps", fps);
+
+        if (strcmp(node->u.list->keys[i], "type") == 0) {
+            if (strcmp(value->u.string, "audio") == 0)
+                info->type = MPV_TRACK_TYPE_AUDIO;
+            else if (strcmp(value->u.string, "video") == 0)
+                info->type = MPV_TRACK_TYPE_VIDEO;
+            else if (strcmp(value->u.string, "sub") == 0)
+                info->type = MPV_TRACK_TYPE_SUB;
+        }
+        else if (strcmp(node->u.list->keys[i], "demux-channel-count") == 0) {
+            if (value->format == MPV_FORMAT_INT64)
+                info->demux_channels = value->u.int64;
+        }
+    }
+
+    struct dstr track_name;
+    dstr_init(&track_name);
+    switch(info->type) {
+    case MPV_TRACK_TYPE_AUDIO:
+        context->audio_tracks++;
+        if (!info->title) {
+            dstr_catf(&track_name, "Audio track %" PRIu64, info->id);
+            info->title = bstrdup(track_name.array);
+        }
+        break;
+    case MPV_TRACK_TYPE_VIDEO:
+        context->video_tracks++;
+        if (!info->title) {
+            dstr_catf(&track_name, "Video track %" PRIu64, info->id);
+            info->title = bstrdup(track_name.array);
+        }
+        break;
+    case MPV_TRACK_TYPE_SUB:
+        context->sub_tracks++;
+        if (!info->title) {
+
+            dstr_catf(&track_name, "Subtitle track %" PRIu64, info->id);
+            if (info->lang)
+                dstr_catf(&track_name, " (%s)", info->lang);
+            info->title = bstrdup(track_name.array);
+        }
+        break;
+    }
+    dstr_free(&track_name);
+}
+
+static inline void mpvs_handle_file_loaded(struct mpv_source* context)
+{
+    // get audio tracks
+    mpv_node tracks = { 0 };
+    int error = mpv_get_property(context->mpv, "track-list", MPV_FORMAT_NODE, &tracks);
+    if (error < 0) {
+        obs_log(LOG_ERROR, "Failed to get audio tracks: %s", mpv_error_string(error));
+        goto end;
+    }
+    if (tracks.format != MPV_FORMAT_NODE_ARRAY) {
+        obs_log(LOG_ERROR, "Failed to get audio tracks: track-list is not an array");
+        goto end;
+    }
+
+    da_resize(context->tracks, tracks.u.list->num);
+    context->audio_tracks = 1;
+    context->video_tracks = 1;
+    context->sub_tracks = 1;
+
+
+    for (int i = 0; i < tracks.u.list->num; i++) {
+        mpv_node* track = &tracks.u.list->values[i];
+        if (track->format != MPV_FORMAT_NODE_MAP) {
+            obs_log(LOG_ERROR, "Failed to get audio tracks: track-list[%d] is not a map", i);
+            goto end;
+        }
+        struct mpv_track_info* info = &context->tracks.array[i];
+        mpvs_init_track(context, info, track);
+    }
+
+    // add the default empty sub track
+    // empty audio and video don't really work well
+    struct mpv_track_info sub_track = {0};
+    sub_track.id = 0;
+    sub_track.type = MPV_TRACK_TYPE_SUB;
+    sub_track.title = bstrdup(obs_module_text("None"));
+    da_push_back(context->tracks, &sub_track);
+
+    // make sure that the current track is less than the number of tracks
+    context->current_audio_track = util_min(context->current_audio_track, context->audio_tracks - 1);
+    context->current_video_track = util_min(context->current_video_track, context->video_tracks - 1);
+    context->current_sub_track = util_min(context->current_sub_track, context->sub_tracks - 1);
+    struct dstr str;
+    dstr_init(&str);
+
+    dstr_printf(&str, "%d", context->current_video_track);
+    MPV_SEND_COMMAND_ASYNC("set", "vid", str.array);
+
+    dstr_printf(&str, "%d", context->current_video_track);
+    MPV_SEND_COMMAND_ASYNC("set", "vid", str.array);
+
+    dstr_printf(&str, "%d", context->current_sub_track);
+    MPV_SEND_COMMAND_ASYNC("set", "sid", str.array);
+
+    dstr_free(&str);
+
+end:
+    mpv_free_node_contents(&tracks);
+}
+
 static inline void mpvs_handle_property_change(struct mpv_source* context, mpv_event_property* prop)
 {
     long media_state = os_atomic_load_long(&context->media_state);
@@ -214,28 +398,24 @@ static inline void mpvs_handle_property_change(struct mpv_source* context, mpv_e
             else
                 os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PLAYING);
         }
-    }
-    else if (strcmp(prop->name, "mute") == 0) {
-        if(prop->format == MPV_FORMAT_FLAG)
+    } else if (strcmp(prop->name, "mute") == 0) {
+        if (prop->format == MPV_FORMAT_FLAG)
             obs_source_set_muted(context->jack_source, *(unsigned*)prop->data);
-    }
-    else if (strcmp(prop->name, "pause") == 0) {
-        if(prop->format == MPV_FORMAT_FLAG) {
-            if((bool)*(unsigned*)prop->data)
+    } else if (strcmp(prop->name, "pause") == 0) {
+        if (prop->format == MPV_FORMAT_FLAG) {
+            if ((bool)*(unsigned*)prop->data)
                 os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PAUSED);
             else
                 os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PLAYING);
         }
-    }
-    else if(strcmp(prop->name, "paused-for-cache") == 0) {
-        if(prop->format == MPV_FORMAT_FLAG) {
-            if(*(unsigned*)prop->data && media_state == OBS_MEDIA_STATE_PLAYING)
+    } else if (strcmp(prop->name, "paused-for-cache") == 0) {
+        if (prop->format == MPV_FORMAT_FLAG) {
+            if (*(unsigned*)prop->data && media_state == OBS_MEDIA_STATE_PLAYING)
                 obs_log(LOG_WARNING, "[%s] Your network is slow or stuck, please wait a bit", obs_source_get_name(context->src));
         }
-    }
-    else if(strcmp(prop->name, "idle-active") == 0) {
-        if(prop->format == MPV_FORMAT_FLAG) {
-            if(*(unsigned*)prop->data) {
+    } else if (strcmp(prop->name, "idle-active") == 0) {
+        if (prop->format == MPV_FORMAT_FLAG) {
+            if (*(unsigned*)prop->data) {
                 os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_ENDED);
             }
         }
@@ -261,11 +441,9 @@ static inline void mpvs_handle_events(struct mpv_source* context)
                 bfree(txt);
             }
             continue;
-        }
-        else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
-            mpvs_handle_property_change(context, (mpv_event_property*) event->data);
-        }
-        else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
+        } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+            mpvs_handle_property_change(context, (mpv_event_property*)event->data);
+        } else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
             // Retrieve the new video size.
             int64_t w, h;
             if (mpv_get_property(context->mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 && mpv_get_property(context->mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 && w > 0 && h > 0) {
@@ -273,15 +451,13 @@ static inline void mpvs_handle_events(struct mpv_source* context)
                 context->height = h;
                 mpvs_generate_texture(context);
             }
-        }
-        else if (event->event_id == MPV_EVENT_START_FILE) {
+        } else if (event->event_id == MPV_EVENT_START_FILE) {
             os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_OPENING);
-        }
-        else if (event->event_id == MPV_EVENT_FILE_LOADED) {
-            context->file_loaded= true;
+        } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
+            context->file_loaded = true;
             os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PLAYING);
-        }
-        else if (event->event_id == MPV_EVENT_END_FILE) {
+            mpvs_handle_file_loaded(context);
+        } else if (event->event_id == MPV_EVENT_END_FILE) {
             os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_ENDED);
         }
         if (event->error < 0) {
@@ -383,6 +559,34 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
             mpvs_load_file(context);
     }
     mpvs_set_mpv_properties(context);
+
+    int audio_track = obs_data_get_int(settings, "audio_track");
+    int video_track = obs_data_get_int(settings, "video_track");
+    int sub_track = obs_data_get_int(settings, "sub_track");
+
+    // select the current tracks
+    struct dstr str;
+    dstr_init(&str);
+
+    if (audio_track != context->current_audio_track) {
+        context->current_audio_track = audio_track;
+        dstr_printf(&str, "%d", context->current_video_track);
+        MPV_SEND_COMMAND_ASYNC("set", "vid", str.array);
+    }
+
+    if (video_track != context->current_video_track) {
+        context->current_video_track = video_track;
+        dstr_printf(&str, "%d", context->current_video_track);
+        MPV_SEND_COMMAND_ASYNC("set", "vid", str.array);
+    }
+
+    if (sub_track != context->current_sub_track) {
+        context->current_sub_track = sub_track;
+        dstr_printf(&str, "%d", context->current_sub_track);
+        MPV_SEND_COMMAND_ASYNC("set", "sid", str.array);
+    }
+
+    dstr_free(&str);
 }
 
 static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
@@ -399,6 +603,7 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)eglGetProcAddress("glGetIntegerv");
     context->_glUseProgram = (PFNGLUSEPROGRAMPROC)eglGetProcAddress("glUseProgram");
 
+    da_init(context->tracks);
     pthread_mutex_init_value(&context->mpv_event_mutex);
 
     struct dstr str;
@@ -409,7 +614,7 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     // so just reuse it
     context->jack_source = obs_get_source_by_name(str.array);
     if (!context->jack_source) {
-        // defaults are fine
+        // selecteds are fine
         obs_data_t* data = obs_data_create();
         context->jack_source = obs_source_create("jack_output_capture", str.array, data, NULL);
         obs_data_release(data);
@@ -420,7 +625,7 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->jack_client_name = bstrdup(str.array);
     dstr_free(&str);
 
-    // generates a default texture with size 512x512, mpv will tell us the acutal size later
+    // generates a selected texture with size 512x512, mpv will tell us the acutal size later
     obs_enter_graphics();
     mpvs_generate_texture(context);
     obs_leave_graphics();
@@ -442,16 +647,22 @@ static void mpvs_source_destroy(void* data)
         gs_texture_destroy(context->video_buffer);
     }
     obs_leave_graphics();
+
+    // free all tracks
+    for (size_t i = 0; i < context->tracks.num; i++) {
+        destroy_mpv_track_info(&context->tracks.array[i]);
+    }
+    da_free(context->tracks);
+
     obs_source_release(context->jack_source);
     bfree(context->jack_port_name);
     bfree(context->jack_client_name);
     bfree(data);
 }
 
-static obs_properties_t* mpvs_source_properties(void* unused)
+static obs_properties_t* mpvs_source_properties(void* data)
 {
-    UNUSED_PARAMETER(unused);
-
+    struct mpv_source* context = data;
     obs_properties_t* props = obs_properties_create();
 
     struct dstr filter_str = { 0 };
@@ -464,6 +675,25 @@ static obs_properties_t* mpvs_source_properties(void* unused)
     dstr_free(&filter_str);
 
     obs_properties_add_bool(props, "osc", obs_module_text("EnableOSC"));
+
+    obs_property_t* video_tracks = obs_properties_add_list(props, "video_track", obs_module_text("VideoTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    obs_property_t* audio_tracks = obs_properties_add_list(props, "audio_track", obs_module_text("AudioTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    obs_property_t* sub_tracks = obs_properties_add_list(props, "sub_track", obs_module_text("SubTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+
+    obs_property_set_enabled(video_tracks, context->video_tracks > 0);
+    obs_property_set_enabled(audio_tracks, context->audio_tracks > 0);
+    obs_property_set_enabled(sub_tracks, context->sub_tracks > 0);
+
+    // iterate over all tracks and add them to the list
+    for (size_t i = 0; i < context->tracks.num; i++) {
+        struct mpv_track_info* track = &context->tracks.array[i];
+        if (track->type == MPV_TRACK_TYPE_VIDEO)
+            obs_property_list_add_int(video_tracks, track->title, track->id);
+        else if (track->type == MPV_TRACK_TYPE_AUDIO)
+            obs_property_list_add_int(audio_tracks, track->title, track->id);
+        else if (track->type == MPV_TRACK_TYPE_SUB)
+            obs_property_list_add_int(sub_tracks, track->title, track->id);
+    }
 
     return props;
 }
@@ -608,7 +838,7 @@ static void mpvs_set_time(void* data, int64_t ms)
 static enum obs_media_state mpvs_get_state(void* data)
 {
     struct mpv_source* context = data;
-    return (enum obs_media_state) os_atomic_load_long(&context->media_state);
+    return (enum obs_media_state)os_atomic_load_long(&context->media_state);
 }
 
 /* OBS interaction functions ----------------------------------------------- */
@@ -668,8 +898,8 @@ static void mpvs_mouse_move(void* data, const struct obs_mouse_event* event,
     MPV_SEND_COMMAND_ASYNC("mouse", pos, pos2);
 }
 
-static void mpvs_key_click(void *data, const struct obs_key_event *event,
-          bool key_up)
+static void mpvs_key_click(void* data, const struct obs_key_event* event,
+    bool key_up)
 {
     struct mpv_source* context = data;
     struct dstr key_combo;
@@ -724,7 +954,7 @@ static void mpvs_enum_active_sources(void* data,
 struct obs_source_info mpv_source_info = {
     .id = "mpvs_source",
     .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_VIDEO| OBS_SOURCE_CONTROLLABLE_MEDIA | OBS_SOURCE_INTERACTION,
+    .output_flags = OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_VIDEO | OBS_SOURCE_CONTROLLABLE_MEDIA | OBS_SOURCE_INTERACTION,
     .create = mpvs_source_create,
     .destroy = mpvs_source_destroy,
     .update = mpvs_source_update,
