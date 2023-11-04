@@ -40,7 +40,7 @@ if(ENABLE_QT)
                AUTORCC ON)
 endif()
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c src/mpv-source.c)
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c src/mpv-source.c src/mpv-source.h)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 

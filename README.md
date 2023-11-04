@@ -7,7 +7,6 @@ Adds a video source for OBS Studio using libmpv.
 Things left to fix/address
 - Add support for playlists, currently it plays only one file
 - Add option to load a custom mpv.conf file and the option to set mpv properties/settings
-- Tell MPV about the audio channel setup of obs (currently always uses stereo)
 - Audio control
     - MPV does not seem to offer any way of retrieving raw audio via a callback
         - On linux the source creates a jack audio capture and tells mpv to connect to it

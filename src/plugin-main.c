@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 extern struct obs_source_info mpv_source_info;
+int mpvs_have_jack_capture_source = 0;
 
 bool obs_module_load(void)
 {
@@ -32,6 +33,13 @@ bool obs_module_load(void)
     obs_register_source(&mpv_source_info);
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)",
         PLUGIN_VERSION);
+
+    obs_data_t* data = obs_data_create();
+    obs_source_t* src = obs_source_create_private("jack_output_capture", "obs-mpv-jack-capture-test", data);
+    mpvs_have_jack_capture_source = !!src;
+    obs_source_release(src);
+    obs_data_release(data);
+
     return true;
 }
 

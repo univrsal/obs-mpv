@@ -11,6 +11,8 @@
 #include <util/threading.h>
 #include <inttypes.h>
 
+#include "mpv-source.h"
+
 #define util_min(a, b) ((a) < (b) ? (a) : (b))
 
 #define MPV_VERBOSE_LOGGING 0
@@ -22,6 +24,41 @@
 #    define MPV_LOG_LEVEL "trace"
 #    define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_INFO
 #endif
+
+#if defined(WIN32)
+#define MPVS_DEFAULT_AUDIO_DRIVER "wasapi"
+#elif defined(__APPLE__)
+#define MPVS_DEFAULT_AUDIO_DRIVER "coreaudio"
+#elif defined(__linux__)
+#define MPVS_DEFAULT_AUDIO_DRIVER "alsa"
+#elif defined(__FreeBSD__)
+#define MPVS_DEFAULT_AUDIO_DRIVER "oss"
+#elif defined(__OpenBSD__)
+#define MPVS_DEFAULT_AUDIO_DRIVER "sndio"
+#endif
+
+static const char* audio_backends[] = {
+#if defined(__linux__)
+    "alsa",
+#elif defined(__APPLE__)
+    "coreaudio",
+#elif defined(_WIN32)
+    "wasapi",
+#endif
+// linux and bsd
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+    "pipewire",
+    "oss",
+    "pulse",
+#endif
+#if defined(__OpenBSD__)
+    "sndio",
+#endif
+    "sdl",
+    "openal",
+    "jack",
+    NULL
+};
 
 enum mpv_track_type {
     MPV_TRACK_TYPE_AUDIO,
@@ -67,6 +104,7 @@ struct mpv_source {
     bool new_events;
     bool file_loaded;
     volatile long media_state;
+    int audio_backend;
 
     DARRAY(struct mpv_track_info)
     tracks;
@@ -198,6 +236,56 @@ static inline const char* mpvs_obs_channel_layout_to_mpv(uint32_t* sample_rate)
 
 /* Misc functions ---------------------------------------------------------- */
 
+static inline void create_jack_capture(struct mpv_source* context)
+{
+    struct dstr str;
+    dstr_init(&str);
+    dstr_catf(&str, "%s audio", obs_source_get_name(context->src));
+
+    // so for some reason the source already exists every other time you start obs
+    // so just reuse it
+    context->jack_source = obs_get_source_by_name(str.array);
+    if (!context->jack_source) {
+        // selecteds are fine
+        obs_data_t* data = obs_data_create();
+        context->jack_source = obs_source_create("jack_output_capture", str.array, data, NULL);
+        obs_data_release(data);
+    }
+    dstr_insert(&str, 0, "OBS Studio: "); // all jack sources are prefixed with this
+    context->jack_port_name = bstrdup(str.array);
+    dstr_printf(&str, "obs-mpv: %s", obs_source_get_name(context->src));
+    context->jack_client_name = bstrdup(str.array);
+    dstr_free(&str);
+}
+
+static inline void destroy_jack_source(struct mpv_source* context)
+{
+    obs_source_release(context->jack_source);
+    bfree(context->jack_port_name);
+    bfree(context->jack_client_name);
+    context->jack_source = NULL;
+    context->jack_port_name = NULL;
+    context->jack_client_name = NULL;
+}
+
+static inline int mpvs_audio_driver_to_index(const char* driver)
+{
+    for (int i = 0; audio_backends[i]; i++) {
+        if (strcmp(driver, audio_backends[i]) == 0)
+            return i;
+    }
+    return -1;
+}
+
+static inline void mpvs_set_audio_backend(struct mpv_source* context, int backend)
+{
+    if (backend < 0)
+        backend = mpvs_audio_driver_to_index("jack");
+    if ((size_t) backend >= sizeof(audio_backends) / sizeof(audio_backends[0]))
+        backend = mpvs_audio_driver_to_index(MPVS_DEFAULT_AUDIO_DRIVER);
+    MPV_SET_OPTION("ao", audio_backends[backend]);
+}
+
 static inline void mpvs_set_mpv_properties(struct mpv_source* context)
 {
     // By selected mpv will wait in the render callback to exactly hit
@@ -205,14 +293,29 @@ static inline void mpvs_set_mpv_properties(struct mpv_source* context)
     // at whatever frame rate obs is using
     MPV_SET_PROP_STR("video-timing-offset", "0");
 
-    // MPV does not offer any way to directly get the audio data so
-    // we use a jack source to get the audio data and make it available to OBS
-    // otherwise mpv just outputs to the desktop audio device
+    // We only want to auto connect if internal audio control is on
+    if (context->audio_backend < 0)
+        MPV_SET_PROP_STR("jack-port", context->jack_port_name);
+    else
+        MPV_SET_PROP_STR("jack-port", "");
+    if (context->jack_client_name)
+        MPV_SET_PROP_STR("jack-name", context->jack_client_name);
+
     uint32_t sample_rate = 0;
-    MPV_SET_PROP_STR("ao", "jack");
-    MPV_SET_PROP_STR("jack-port", context->jack_port_name);
-    MPV_SET_PROP_STR("jack-name", context->jack_client_name);
     MPV_SET_PROP_STR("audio-channels", mpvs_obs_channel_layout_to_mpv(&sample_rate));
+
+    // user enabled audio control through obs and a jack audio capture source
+    if (context->audio_backend < 0) {
+        MPV_SET_PROP_STR("ao", "null");
+        MPV_SET_PROP_STR("ao", "jack");
+    } else {
+        // So if someone switches from internal audio control to jack
+        // we have to load the null driver first to make sure mpv knows
+        // about the updated jack-port value
+        if (context->audio_backend == mpvs_audio_driver_to_index("jack"))
+            MPV_SET_PROP_STR("ao", "null");
+        MPV_SET_PROP_STR("ao", audio_backends[context->audio_backend]);
+    }
 
     struct dstr str;
     dstr_init(&str);
@@ -594,7 +697,6 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
         if (context->init)
             mpvs_load_file(context);
     }
-    mpvs_set_mpv_properties(context);
 
     int audio_track = obs_data_get_int(settings, "audio_track");
     int video_track = obs_data_get_int(settings, "video_track");
@@ -623,6 +725,20 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
     }
 
     dstr_free(&str);
+
+    bool internal_audio_control = obs_data_get_bool(settings, "internal_audio_control");
+
+    if (internal_audio_control && mpvs_have_jack_capture_source) {
+        context->audio_backend = -1;
+        obs_source_add_active_child(context->src, context->jack_source);
+    } else {
+        obs_source_remove_active_child(context->src, context->jack_source);
+        context->audio_backend = obs_data_get_int(settings, "audio_driver");
+    }
+
+    mpvs_set_audio_backend(context, context->audio_backend);
+
+    mpvs_set_mpv_properties(context);
 }
 
 static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
@@ -638,33 +754,17 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->_glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC)eglGetProcAddress("glFramebufferTexture2D");
     context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)eglGetProcAddress("glGetIntegerv");
     context->_glUseProgram = (PFNGLUSEPROGRAMPROC)eglGetProcAddress("glUseProgram");
+    context->audio_backend = mpvs_audio_driver_to_index(MPVS_DEFAULT_AUDIO_DRIVER);
 
     da_init(context->tracks);
     pthread_mutex_init_value(&context->mpv_event_mutex);
 
-    struct dstr str;
-    dstr_init(&str);
-    dstr_catf(&str, "%s audio", obs_source_get_name(context->src));
-
-    // so for some reason the source already exists every other time you start obs
-    // so just reuse it
-    context->jack_source = obs_get_source_by_name(str.array);
-    if (!context->jack_source) {
-        // selecteds are fine
-        obs_data_t* data = obs_data_create();
-        context->jack_source = obs_source_create("jack_output_capture", str.array, data, NULL);
-        obs_data_release(data);
-    }
-    dstr_insert(&str, 0, "OBS Studio: "); // all jack sources are prefixed with this
-    context->jack_port_name = bstrdup(str.array);
-    dstr_printf(&str, "obs-mpv: %s", obs_source_get_name(context->src));
-    context->jack_client_name = bstrdup(str.array);
-    dstr_free(&str);
-
-    // generates a selected texture with size 512x512, mpv will tell us the acutal size later
+    // generates a selected texture with size 512x512, mpv will tell us the actual size later
     obs_enter_graphics();
     mpvs_generate_texture(context);
     obs_leave_graphics();
+
+    create_jack_capture(context);
 
     obs_source_update(context->src, settings);
     return context;
@@ -690,10 +790,29 @@ static void mpvs_source_destroy(void* data)
     }
     da_free(context->tracks);
 
-    obs_source_release(context->jack_source);
-    bfree(context->jack_port_name);
-    bfree(context->jack_client_name);
+    destroy_jack_source(context);
     bfree(data);
+}
+
+static void mpvs_source_defaults(obs_data_t* settings)
+{
+    obs_data_set_default_string(settings, "file", "");
+    obs_data_set_default_bool(settings, "osc", false);
+    obs_data_set_default_int(settings, "video_track", 0);
+    obs_data_set_default_int(settings, "audio_track", 0);
+    obs_data_set_default_int(settings, "sub_track", 0);
+    obs_data_set_default_bool(settings, "internal_audio_control", false);
+    obs_data_set_default_int(settings, "audio_driver", mpvs_audio_driver_to_index(MPVS_DEFAULT_AUDIO_DRIVER));
+}
+
+bool mpvs_internal_audio_control_modified(obs_properties_t *props,
+                                        obs_property_t *property,
+                                        obs_data_t *settings)
+{
+    UNUSED_PARAMETER(property);
+    bool internal_audio_control = obs_data_get_bool(settings, "internal_audio_control");
+    obs_property_set_enabled(obs_properties_get(props, "audio_driver"), !internal_audio_control);
+    return true;
 }
 
 static obs_properties_t* mpvs_source_properties(void* data)
@@ -729,6 +848,24 @@ static obs_properties_t* mpvs_source_properties(void* data)
             obs_property_list_add_int(audio_tracks, track->title, track->id);
         else if (track->type == MPV_TRACK_TYPE_SUB)
             obs_property_list_add_int(sub_tracks, track->title, track->id);
+    }
+
+    // no point in showing this if the jack source doesn't work
+    if (mpvs_have_jack_capture_source) {
+        obs_property_t* cb = obs_properties_add_bool(props, "internal_audio_control", obs_module_text("InternalAudioControl"));
+        obs_property_set_modified_callback(cb, mpvs_internal_audio_control_modified);
+    }
+
+    obs_property_t* audio_driver_list = obs_properties_add_list(props, "audio_driver", obs_module_text("AudioDriver"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+
+    for (size_t i = 0; audio_backends[i]; i++) {
+        size_t index = obs_property_list_add_int(audio_driver_list, audio_backends[i], i);
+
+        // This source is always created so it can only be null if obs
+        // doesn't have the jack plugin
+        if (strcmp(audio_backends[i], "jack") == 0 && !context->jack_source) {
+            obs_property_list_item_disable(audio_driver_list, index, false);
+        }
     }
 
     return props;
@@ -826,7 +963,7 @@ static void mpvs_playlist_prev(void* data)
 static int64_t mpvs_get_duration(void* data)
 {
     struct mpv_source* context = data;
-    if (!context->mpv)
+    if (!context->mpv || !context->file_loaded)
         return 0;
 
     double duration;
@@ -835,7 +972,7 @@ static int64_t mpvs_get_duration(void* data)
     error = mpv_get_property(context->mpv, "duration/full", MPV_FORMAT_DOUBLE, &duration);
 
     if (error < 0) {
-        obs_log(LOG_ERROR, "Error getting duration: %s\n", mpv_error_string(error));
+        obs_log(LOG_ERROR, "Error getting duration: %s", mpv_error_string(error));
         return 0;
     }
     return floor(duration) * 1000;
@@ -844,7 +981,7 @@ static int64_t mpvs_get_duration(void* data)
 static int64_t mpvs_get_time(void* data)
 {
     struct mpv_source* context = data;
-    if (!context->mpv)
+    if (!context->mpv || !context->file_loaded)
         return 0;
 
     double playback_time;
@@ -854,7 +991,7 @@ static int64_t mpvs_get_time(void* data)
     error = mpv_get_property(context->mpv, "playback-time", MPV_FORMAT_DOUBLE, &playback_time);
 
     if (error < 0) {
-        obs_log(LOG_ERROR, "Error getting playback time: %s\n", mpv_error_string(error));
+        obs_log(LOG_ERROR, "Error getting playback time: %s", mpv_error_string(error));
         return 0;
     }
     return floor(playback_time) * 1000;
@@ -984,7 +1121,8 @@ static void mpvs_enum_active_sources(void* data,
     void* param)
 {
     struct mpv_source* context = data;
-    enum_callback(context->src, context->jack_source, param);
+    if (context->jack_source)
+        enum_callback(context->src, context->jack_source, param);
 }
 
 struct obs_source_info mpv_source_info = {
@@ -993,6 +1131,7 @@ struct obs_source_info mpv_source_info = {
     .output_flags = OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_VIDEO | OBS_SOURCE_CONTROLLABLE_MEDIA | OBS_SOURCE_INTERACTION,
     .create = mpvs_source_create,
     .destroy = mpvs_source_destroy,
+    .get_defaults = mpvs_source_defaults,
     .update = mpvs_source_update,
     .get_name = mpvs_source_get_name,
     .get_width = mpvs_source_getwidth,
