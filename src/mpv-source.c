@@ -455,6 +455,7 @@ static void mpvs_mouse_move(void* data, const struct obs_mouse_event* event,
     dstr_printf(&x, "%d", event->x);
     dstr_printf(&y, "%d", event->y);
     MPV_SEND_COMMAND_ASYNC("mouse", x.array, y.array);
+    dstr_free(&y);
     dstr_free(&x);
 }
 
