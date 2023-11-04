@@ -1,6 +1,7 @@
 #include "mpv-backend.h"
-#include <util/dstr.h>
+#include <obs-frontend-api.h>
 #include <util/darray.h>
+#include <util/dstr.h>
 
 const char* audio_backends[] = {
 #if defined(__linux__)
@@ -67,6 +68,9 @@ static inline void mpvs_handle_file_loaded(struct mpv_source* context)
         goto end;
     }
 
+    for (size_t i = 0; i < context->tracks.num; i++)
+        destroy_mpv_track_info(&context->tracks.array[i]);
+    da_clear(context->tracks);
     da_resize(context->tracks, tracks.u.list->num);
     context->audio_tracks = 1;
     context->video_tracks = 1;
