@@ -229,6 +229,8 @@ void mpvs_init(struct mpv_source* context)
     context->init = true;
     context->mpv = mpv_create();
 
+    MPV_SET_OPTION("audio-client-name", "OBS");
+
     int result = mpv_initialize(context->mpv) < 0;
     if (result < 0) {
         obs_log(LOG_ERROR, "Failed to initialize mpv context: %s", mpv_error_string(result));
