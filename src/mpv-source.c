@@ -1,5 +1,6 @@
 #include <glad/glad.h>
 #include <glad/glad_egl.h>
+#include <inttypes.h>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 #include <obs-frontend-api.h>
@@ -9,7 +10,6 @@
 #include <util/dstr.h>
 #include <util/platform.h>
 #include <util/threading.h>
-#include <inttypes.h>
 
 #include "mpv-source.h"
 
@@ -22,19 +22,23 @@
 #    define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_WARN
 #else
 #    define MPV_LOG_LEVEL "trace"
-#    define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_INFO
+#    if MPV_VERBOSE_LOGGING
+#        define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_TRACE
+#    else
+#        define MPV_MIN_LOG_LEVEL MPV_LOG_LEVEL_INFO
+#    endif
 #endif
 
 #if defined(WIN32)
-#define MPVS_DEFAULT_AUDIO_DRIVER "wasapi"
+#    define MPVS_DEFAULT_AUDIO_DRIVER "wasapi"
 #elif defined(__APPLE__)
-#define MPVS_DEFAULT_AUDIO_DRIVER "coreaudio"
+#    define MPVS_DEFAULT_AUDIO_DRIVER "coreaudio"
 #elif defined(__linux__)
-#define MPVS_DEFAULT_AUDIO_DRIVER "alsa"
+#    define MPVS_DEFAULT_AUDIO_DRIVER "alsa"
 #elif defined(__FreeBSD__)
-#define MPVS_DEFAULT_AUDIO_DRIVER "oss"
+#    define MPVS_DEFAULT_AUDIO_DRIVER "oss"
 #elif defined(__OpenBSD__)
-#define MPVS_DEFAULT_AUDIO_DRIVER "sndio"
+#    define MPVS_DEFAULT_AUDIO_DRIVER "sndio"
 #endif
 
 static const char* audio_backends[] = {
@@ -151,7 +155,6 @@ static inline void destroy_mpv_track_info(struct mpv_track_info* track)
             obs_log(LOG_ERROR, "Failed to run mpv command: %s", mpv_error_string(__mpv_result));      \
     } while (0)
 
-
 #define MPV_GET_PROP_FLAG(name, out)                                                                       \
     do {                                                                                                   \
         if (!context->init)                                                                                \
@@ -207,32 +210,31 @@ static void* get_proc_address_mpvs(void* ctx, const char* name)
 
 static inline const char* mpvs_obs_channel_layout_to_mpv(uint32_t* sample_rate)
 {
-    struct obs_audio_info info = {0};
+    struct obs_audio_info info = { 0 };
     if (obs_get_audio_info(&info)) {
         *sample_rate = info.samples_per_sec;
         switch (info.speakers) {
-            case SPEAKERS_MONO:
-                return "mono";
-            default:
-            case SPEAKERS_UNKNOWN:
-            case SPEAKERS_STEREO:
-                return "stereo";
-            case SPEAKERS_2POINT1:
-                return "2.1";
-            case SPEAKERS_4POINT0:
-                return "4.0";
-            case SPEAKERS_4POINT1:
-                return "4.1";
-            case SPEAKERS_5POINT1:
-                return "5.1";
-            case SPEAKERS_7POINT1:
-                return "7.1";
+        case SPEAKERS_MONO:
+            return "mono";
+        default:
+        case SPEAKERS_UNKNOWN:
+        case SPEAKERS_STEREO:
+            return "stereo";
+        case SPEAKERS_2POINT1:
+            return "2.1";
+        case SPEAKERS_4POINT0:
+            return "4.0";
+        case SPEAKERS_4POINT1:
+            return "4.1";
+        case SPEAKERS_5POINT1:
+            return "5.1";
+        case SPEAKERS_7POINT1:
+            return "7.1";
         }
     }
     *sample_rate = 48000;
     return "stereo";
 }
-
 
 /* Misc functions ---------------------------------------------------------- */
 
@@ -281,7 +283,7 @@ static inline void mpvs_set_audio_backend(struct mpv_source* context, int backen
 {
     if (backend < 0)
         backend = mpvs_audio_driver_to_index("jack");
-    if ((size_t) backend >= sizeof(audio_backends) / sizeof(audio_backends[0]))
+    if ((size_t)backend >= sizeof(audio_backends) / sizeof(audio_backends[0]))
         backend = mpvs_audio_driver_to_index(MPVS_DEFAULT_AUDIO_DRIVER);
     MPV_SET_OPTION("ao", audio_backends[backend]);
 }
@@ -346,7 +348,9 @@ static inline void mpvs_generate_texture(struct mpv_source* context)
         gs_texture_destroy(context->video_buffer);
         context->_glDeleteFramebuffers(1, &context->fbo);
     }
+
     context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
+
     gs_set_render_target(context->video_buffer, NULL);
     if (context->fbo)
         context->_glDeleteFramebuffers(1, &context->fbo);
@@ -384,20 +388,20 @@ static inline int mpvs_mpv_log_level_to_obs(mpv_log_level lvl)
 static inline void mpvs_init_track(struct mpv_source* context, struct mpv_track_info* info, mpv_node* node)
 {
     mpv_node* value = NULL;
-#define MPVS_SET_TRACK_INFO_STRING(id, name) \
-    do {                                                       \
-        if (strcmp(node->u.list->keys[i], id) == 0) { \
-            if (value->format == MPV_FORMAT_STRING)            \
-                info->name = bstrdup(value->u.string);         \
-        }                                                      \
+#define MPVS_SET_TRACK_INFO_STRING(id, name)           \
+    do {                                               \
+        if (strcmp(node->u.list->keys[i], id) == 0) {  \
+            if (value->format == MPV_FORMAT_STRING)    \
+                info->name = bstrdup(value->u.string); \
+        }                                              \
     } while (0)
 
-#define MPVS_SET_TRACK_INFO(id, name, t, val)                  \
-    do {                                                       \
+#define MPVS_SET_TRACK_INFO(id, name, t, val)         \
+    do {                                              \
         if (strcmp(node->u.list->keys[i], id) == 0) { \
-            if (value->format == t)                            \
-                info->name = value->u.val;                     \
-        }                                                      \
+            if (value->format == t)                   \
+                info->name = value->u.val;            \
+        }                                             \
     } while (0)
 
 #define MPVS_SET_TRACK_INFO_INT64(id, name) \
@@ -429,8 +433,7 @@ static inline void mpvs_init_track(struct mpv_source* context, struct mpv_track_
                 info->type = MPV_TRACK_TYPE_VIDEO;
             else if (strcmp(value->u.string, "sub") == 0)
                 info->type = MPV_TRACK_TYPE_SUB;
-        }
-        else if (strcmp(node->u.list->keys[i], "demux-channel-count") == 0) {
+        } else if (strcmp(node->u.list->keys[i], "demux-channel-count") == 0) {
             if (value->format == MPV_FORMAT_INT64)
                 info->demux_channels = value->u.int64;
         }
@@ -438,7 +441,7 @@ static inline void mpvs_init_track(struct mpv_source* context, struct mpv_track_
 
     struct dstr track_name;
     dstr_init(&track_name);
-    switch(info->type) {
+    switch (info->type) {
     case MPV_TRACK_TYPE_AUDIO:
         context->audio_tracks++;
         if (!info->title) {
@@ -486,7 +489,6 @@ static inline void mpvs_handle_file_loaded(struct mpv_source* context)
     context->video_tracks = 1;
     context->sub_tracks = 1;
 
-
     for (int i = 0; i < tracks.u.list->num; i++) {
         mpv_node* track = &tracks.u.list->values[i];
         if (track->format != MPV_FORMAT_NODE_MAP) {
@@ -499,7 +501,7 @@ static inline void mpvs_handle_file_loaded(struct mpv_source* context)
 
     // add the default empty sub track
     // empty audio and video don't really work well
-    struct mpv_track_info sub_track = {0};
+    struct mpv_track_info sub_track = { 0 };
     sub_track.id = 0;
     sub_track.type = MPV_TRACK_TYPE_SUB;
     sub_track.title = bstrdup(obs_module_text("None"));
@@ -624,13 +626,11 @@ static inline void mpvs_render(struct mpv_source* context)
     };
 
     gs_blend_state_push();
-
     int result = mpv_render_context_render(context->mpv_gl, params);
-    if (result != 0) {
-        obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
-    }
-
     gs_blend_state_pop();
+
+    if (result != 0)
+        obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
 
     context->_glUseProgram(currentProgram);
 }
@@ -805,9 +805,9 @@ static void mpvs_source_defaults(obs_data_t* settings)
     obs_data_set_default_int(settings, "audio_driver", mpvs_audio_driver_to_index(MPVS_DEFAULT_AUDIO_DRIVER));
 }
 
-bool mpvs_internal_audio_control_modified(obs_properties_t *props,
-                                        obs_property_t *property,
-                                        obs_data_t *settings)
+bool mpvs_internal_audio_control_modified(obs_properties_t* props,
+    obs_property_t* property,
+    obs_data_t* settings)
 {
     UNUSED_PARAMETER(property);
     bool internal_audio_control = obs_data_get_bool(settings, "internal_audio_control");
@@ -888,29 +888,6 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
 
     gs_blend_state_pop();
     gs_enable_framebuffer_srgb(previous);
-
-    if (!context->init)
-        mpvs_init(context);
-    if (context->init_failed)
-        return;
-
-    // mpv will set these flags in a separate thread
-    // from what I can tell initilazation, event handling and rendering
-    // should all happen in the same thread so we all do it here in the graphics thread
-    pthread_mutex_lock(&context->mpv_event_mutex);
-    bool need_redraw = context->redraw;
-    bool need_poll = context->new_events;
-    if (need_redraw)
-        context->redraw = false;
-    if (need_poll)
-        context->new_events = false;
-    pthread_mutex_unlock(&context->mpv_event_mutex);
-
-    if (need_poll)
-        mpvs_handle_events(context);
-
-    if (context->init && need_redraw)
-        mpvs_render(context);
 }
 
 static uint32_t mpvs_source_getwidth(void* data)
@@ -1125,6 +1102,37 @@ static void mpvs_enum_active_sources(void* data,
         enum_callback(context->src, context->jack_source, param);
 }
 
+static void mpvs_source_video_tick(void* data, float seconds)
+{
+    UNUSED_PARAMETER(seconds);
+    struct mpv_source* context = data;
+    obs_enter_graphics();
+
+    if (!context->init)
+        mpvs_init(context);
+    if (context->init_failed)
+        return;
+
+    // mpv will set these flags in a separate thread
+    // from what I can tell initilazation, event handling and rendering
+    // should all happen in the same thread so we all do it here in the graphics thread
+    pthread_mutex_lock(&context->mpv_event_mutex);
+    bool need_redraw = context->redraw;
+    bool need_poll = context->new_events;
+    if (need_redraw)
+        context->redraw = false;
+    if (need_poll)
+        context->new_events = false;
+    pthread_mutex_unlock(&context->mpv_event_mutex);
+
+    if (need_poll)
+        mpvs_handle_events(context);
+
+    if (context->init && need_redraw)
+        mpvs_render(context);
+    obs_leave_graphics();
+}
+
 struct obs_source_info mpv_source_info = {
     .id = "mpvs_source",
     .type = OBS_SOURCE_TYPE_INPUT,
@@ -1137,6 +1145,7 @@ struct obs_source_info mpv_source_info = {
     .get_width = mpvs_source_getwidth,
     .get_height = mpvs_source_getheight,
     .video_render = mpvs_source_render,
+    .video_tick = mpvs_source_video_tick,
     .get_properties = mpvs_source_properties,
     .icon_type = OBS_ICON_TYPE_MEDIA,
     .enum_active_sources = mpvs_enum_active_sources,
