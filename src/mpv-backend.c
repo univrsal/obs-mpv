@@ -95,9 +95,9 @@ static inline void mpvs_handle_file_loaded(struct mpv_source* context)
     da_push_back(context->tracks, &sub_track);
 
     // make sure that the current track is less than the number of tracks
-    context->current_audio_track = util_min(context->current_audio_track, context->audio_tracks - 1);
-    context->current_video_track = util_min(context->current_video_track, context->video_tracks - 1);
-    context->current_sub_track = util_min(context->current_sub_track, context->sub_tracks - 1);
+    context->current_audio_track = util_clamp(context->current_audio_track, 0, context->audio_tracks - 1);
+    context->current_video_track = util_clamp(context->current_video_track, 0, context->video_tracks - 1);
+    context->current_sub_track = util_clamp(context->current_sub_track, 0, context->sub_tracks - 1);
     struct dstr str;
     dstr_init(&str);
 
@@ -149,7 +149,6 @@ static inline void mpvs_handle_property_change(struct mpv_source* context, mpv_e
         }
     }
 }
-
 
 void mpvs_handle_events(struct mpv_source* context)
 {
@@ -426,4 +425,3 @@ void mpvs_generate_texture(struct mpv_source* context)
     }
     gs_set_render_target(NULL, NULL);
 }
-

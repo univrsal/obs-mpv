@@ -1,8 +1,8 @@
 #pragma once
-#include <obs-module.h>
-#include <mpv/client.h>
 #include "mpv-source.h"
 #include "plugin-support.h"
+#include <mpv/client.h>
+#include <obs-module.h>
 
 enum mpv_track_type {
     MPV_TRACK_TYPE_AUDIO,
@@ -58,7 +58,6 @@ extern size_t audio_backends_count;
 #elif defined(__OpenBSD__)
 #    define MPVS_DEFAULT_AUDIO_DRIVER "sndio"
 #endif
-
 
 #define MPV_SEND_COMMAND_ASYNC(...)                                                                   \
     do {                                                                                              \

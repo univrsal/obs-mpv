@@ -1,14 +1,16 @@
 #pragma once
-#include <obs-module.h>
 #include <glad/glad.h>
 #include <glad/glad_egl.h>
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
+#include <obs-module.h>
 #include <util/threading.h>
 
 extern int mpvs_have_jack_capture_source;
 
 #define util_min(a, b) ((a) < (b) ? (a) : (b))
+#define util_max(a, b) ((a) > (b) ? (a) : (b))
+#define util_clamp(a, min, max) util_min(util_max(a, min), max)
 
 struct mpv_source {
     // basic source stuff

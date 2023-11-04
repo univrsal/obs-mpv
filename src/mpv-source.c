@@ -6,8 +6,8 @@
 #include <util/dstr.h>
 #include <util/platform.h>
 
-#include "mpv-source.h"
 #include "mpv-backend.h"
+#include "mpv-source.h"
 
 /* Misc functions ---------------------------------------------------------- */
 
@@ -53,6 +53,23 @@ static inline bool mpvs_internal_audio_control_modified(obs_properties_t* props,
     return true;
 }
 
+static inline bool mpvs_file_changed(obs_properties_t* props,
+    obs_property_t* property,
+    obs_data_t* settings)
+{
+    UNUSED_PARAMETER(property);
+    const char* file = obs_data_get_string(settings, "file");
+    obs_property_t* video_tracks = obs_properties_get(props, "video_track");
+    obs_property_t* audio_tracks = obs_properties_get(props, "audio_track");
+    obs_property_t* sub_tracks = obs_properties_get(props, "sub_track");
+
+    bool enable = strlen(file) > 0;
+    obs_property_set_enabled(video_tracks, enable);
+    obs_property_set_enabled(audio_tracks, enable);
+    obs_property_set_enabled(sub_tracks, enable);
+    return true;
+}
+
 /* Basic obs functions ----------------------------------------------------- */
 
 static const char* mpvs_source_get_name(void* unused)
@@ -78,6 +95,29 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
 
     da_init(context->tracks);
     pthread_mutex_init_value(&context->mpv_event_mutex);
+
+    // add default tracks
+    struct dstr track_name;
+    dstr_init(&track_name);
+
+    struct mpv_track_info sub_track = { 0 };
+    sub_track.id = 0;
+    sub_track.type = MPV_TRACK_TYPE_SUB;
+    sub_track.title = bstrdup(obs_module_text("None"));
+    da_push_back(context->tracks, &sub_track);
+
+    dstr_printf(&track_name, "Audio track %i", 1);
+    sub_track.id = 1;
+    sub_track.type = MPV_TRACK_TYPE_AUDIO;
+    sub_track.title = bstrdup(track_name.array);
+    da_push_back(context->tracks, &sub_track);
+
+    dstr_printf(&track_name, "Video track %i", 1);
+    sub_track.id = 1;
+    sub_track.type = MPV_TRACK_TYPE_VIDEO;
+    sub_track.title = bstrdup(track_name.array);
+    da_push_back(context->tracks, &sub_track);
+    dstr_free(&track_name);
 
     // generates a selected texture with size 512x512, mpv will tell us the actual size later
     obs_enter_graphics();
@@ -119,6 +159,7 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
     struct mpv_source* context = data;
     const char* path = obs_data_get_string(settings, "file");
     context->osc = obs_data_get_bool(settings, "osc");
+
     if (!context->file_path || strcmp(path, context->file_path) != 0) {
         context->file_loaded = false;
         context->file_path = path;
@@ -169,7 +210,6 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
     mpvs_set_mpv_properties(context);
 }
 
-
 static void mpvs_source_defaults(obs_data_t* settings)
 {
     obs_data_set_default_string(settings, "file", "");
@@ -191,7 +231,8 @@ static obs_properties_t* mpvs_source_properties(void* data)
     dstr_cat(&filter_str, "all files");
     dstr_cat(&filter_str, " (*.*)");
 
-    obs_properties_add_path(props, "file", obs_module_text("File"), OBS_PATH_FILE, filter_str.array, NULL);
+    obs_property_t* file_prop = obs_properties_add_path(props, "file", obs_module_text("File"), OBS_PATH_FILE, filter_str.array, NULL);
+    obs_property_set_modified_callback(file_prop, mpvs_file_changed);
 
     dstr_free(&filter_str);
 
@@ -201,9 +242,9 @@ static obs_properties_t* mpvs_source_properties(void* data)
     obs_property_t* audio_tracks = obs_properties_add_list(props, "audio_track", obs_module_text("AudioTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
     obs_property_t* sub_tracks = obs_properties_add_list(props, "sub_track", obs_module_text("SubTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 
-    obs_property_set_enabled(video_tracks, context->video_tracks > 0);
-    obs_property_set_enabled(audio_tracks, context->audio_tracks > 0);
-    obs_property_set_enabled(sub_tracks, context->sub_tracks > 0);
+    obs_property_set_enabled(video_tracks, context->file_loaded);
+    obs_property_set_enabled(audio_tracks, context->file_loaded);
+    obs_property_set_enabled(sub_tracks, context->file_loaded);
 
     // iterate over all tracks and add them to the list
     for (size_t i = 0; i < context->tracks.num; i++) {
