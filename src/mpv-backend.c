@@ -165,7 +165,8 @@ void mpvs_handle_events(struct mpv_source* context)
                 char* end = txt + strlen(txt) - 1;
                 if (*end == '\n')
                     *end = '\0';
-                obs_log(mpvs_mpv_log_level_to_obs(msg->log_level), "log: %s", txt);
+                if (strlen(txt) > 0)
+                    obs_log(mpvs_mpv_log_level_to_obs(msg->log_level), "log: %s", txt);
                 bfree(txt);
             }
             continue;
