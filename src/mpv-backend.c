@@ -187,6 +187,14 @@ void mpvs_handle_events(struct mpv_source* context)
             mpvs_handle_file_loaded(context);
         } else if (event->event_id == MPV_EVENT_END_FILE) {
             os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_ENDED);
+        } else if (event->event_id == MPV_EVENT_COMMAND_REPLY) {
+            if (event->reply_userdata == MPVS_PLAYLIST_LOADED) {
+                // make sure that loop/shuffle are set
+                if (context->shuffle)
+                    MPV_SEND_COMMAND_ASYNC("playlist-shuffle");
+                MPV_SEND_COMMAND_ASYNC("set", "loop", context->loop ? "inf" : "no");
+                context->redraw = true;
+            }
         }
         if (event->error < 0) {
             obs_log(LOG_ERROR, "mpv command %s failed: %s", mpv_event_name(event->event_id), mpv_error_string(event->error));
@@ -264,7 +272,11 @@ void mpvs_init(struct mpv_source* context)
     mpv_observe_property(context->mpv, 0, "pause", MPV_FORMAT_FLAG);
     mpv_observe_property(context->mpv, 0, "paused-for-cache", MPV_FORMAT_FLAG);
 
-    mpvs_load_file(context);
+    if (context->queued_temp_playlist_file_path) {
+        mpvs_load_file(context, context->queued_temp_playlist_file_path);
+        bfree(context->queued_temp_playlist_file_path);
+        context->queued_temp_playlist_file_path = NULL;
+    }
 }
 
 void mpvs_init_track(struct mpv_source* context, struct mpv_track_info* info, mpv_node* node)
@@ -352,26 +364,24 @@ void mpvs_init_track(struct mpv_source* context, struct mpv_track_info* info, mp
     dstr_free(&track_name);
 }
 
-void mpvs_load_file(struct mpv_source* context)
+void mpvs_load_file(struct mpv_source* context, const char* playlist_file)
 {
-    if (strlen(context->file_path) > 0) {
-        const char* cmd[] = { "loadfile", context->file_path, NULL };
-        int result = mpv_command_async(context->mpv, 0, cmd);
-        if (result < 0) {
-            obs_log(LOG_ERROR, "Failed to load file: %s, %s", context->file_path, mpv_error_string(result));
-        }
+    const char* cmd[] = { "loadfile", playlist_file, NULL };
+    int result = mpv_command_async(context->mpv, MPVS_PLAYLIST_LOADED, cmd);
+    if (result < 0) {
+        obs_log(LOG_ERROR, "Failed to load file: %s, %s", playlist_file, mpv_error_string(result));
     }
 }
 
 void mpvs_set_mpv_properties(struct mpv_source* context)
 {
-    // By selected mpv will wait in the render callback to exactly hit
+    // By default mpv will wait in the render callback to exactly hit
     // whatever framerate the playing video has, but we want to render
     // at whatever frame rate obs is using
     MPV_SET_PROP_STR("video-timing-offset", "0");
 
     // We only want to auto connect if internal audio control is on
-    if (context->audio_backend < 0)
+    if (context->audio_backend < 0 && context->jack_port_name)
         MPV_SET_PROP_STR("jack-port", context->jack_port_name);
     else
         MPV_SET_PROP_STR("jack-port", "");
@@ -394,8 +404,7 @@ void mpvs_set_mpv_properties(struct mpv_source* context)
         MPV_SET_PROP_STR("ao", audio_backends[context->audio_backend]);
     }
 
-    struct dstr str;
-    dstr_init(&str);
+    struct dstr str = { 0 };
     dstr_printf(&str, "%d", sample_rate);
     MPV_SET_PROP_STR("audio-samplerate", str.array);
     dstr_free(&str);

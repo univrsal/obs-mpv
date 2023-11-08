@@ -4,6 +4,7 @@
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
 #include <obs-module.h>
+#include <util/dstr.h>
 #include <util/threading.h>
 
 extern int mpvs_have_jack_capture_source;
@@ -12,13 +13,97 @@ extern int mpvs_have_jack_capture_source;
 #define util_max(a, b) ((a) > (b) ? (a) : (b))
 #define util_clamp(a, min, max) util_min(util_max(a, min), max)
 
+#if defined(_WIN32)
+#define TMP_DIR "C:\\Windows\\Temp"
+#else
+#define TMP_DIR "/tmp"
+#endif
+
+#define EXTENSIONS_AUDIO \
+	"*.3ga;"         \
+	"*.669;"         \
+	"*.a52;"         \
+	"*.aac;"         \
+	"*.ac3;"         \
+	"*.adt;"         \
+	"*.adts;"        \
+	"*.aif;"         \
+	"*.aifc;"        \
+	"*.aiff;"        \
+	"*.amb;"         \
+	"*.amr;"         \
+	"*.aob;"         \
+	"*.ape;"         \
+	"*.au;"          \
+	"*.awb;"         \
+	"*.caf;"         \
+	"*.dts;"         \
+	"*.flac;"        \
+	"*.it;"          \
+	"*.kar;"         \
+	"*.m4a;"         \
+	"*.m4b;"         \
+	"*.m4p;"         \
+	"*.m5p;"         \
+	"*.mid;"         \
+	"*.mka;"         \
+	"*.mlp;"         \
+	"*.mod;"         \
+	"*.mpa;"         \
+	"*.mp1;"         \
+	"*.mp2;"         \
+	"*.mp3;"         \
+	"*.mpc;"         \
+	"*.mpga;"        \
+	"*.mus;"         \
+	"*.oga;"         \
+	"*.ogg;"         \
+	"*.oma;"         \
+	"*.opus;"        \
+	"*.qcp;"         \
+	"*.ra;"          \
+	"*.rmi;"         \
+	"*.s3m;"         \
+	"*.sid;"         \
+	"*.spx;"         \
+	"*.tak;"         \
+	"*.thd;"         \
+	"*.tta;"         \
+	"*.voc;"         \
+	"*.vqf;"         \
+	"*.w64;"         \
+	"*.wav;"         \
+	"*.wma;"         \
+	"*.wv;"          \
+	"*.xa;"          \
+	"*.xm"
+
+#define EXTENSIONS_VIDEO                                                       \
+	"*.3g2;*.3gp;*.3gp2;*.3gpp;*.amv;*.asf;*.avi;"                         \
+	"*.bik;*.bin;*.crf;*.divx;*.drc;*.dv;*.evo;*.f4v;*.flv;*.gvi;*.gxf;"   \
+	"*.iso;*.m1v;*.m2v;*.m2t;*.m2ts;*.m4v;*.mkv;*.mov;*.mp2;*.mp2v;*.mp4;" \
+	"*.mp4v;*.mpe;*.mpeg;*.mpeg1;*.mpeg2;*.mpeg4;*.mpg;*.mpv2;*.mts;"      \
+	"*.mtv;*.mxf;*.mxg;*.nsv;*.nuv;*.ogg;*.ogm;*.ogv;*.ogx;*.ps;*.rec;"    \
+	"*.rm;*.rmvb;*.rpl;*.thp;*.tod;*.ts;*.tts;*.txd;*.vob;*.vro;*.webm;"   \
+	"*.wm;*.wmv;*.wtv;*.xesc"
+
+#define EXTENSIONS_PLAYLIST                           \
+	"*.asx;*.b4s;*.cue;*.ifo;*.m3u;*.m3u8;*.pls;" \
+	"*.ram;*.rar;*.sdp;*.vlc;*.xspf;*.wax;*.wvx;*.zip;*.conf"
+
+#define EXTENSIONS_MEDIA \
+	EXTENSIONS_VIDEO ";" EXTENSIONS_AUDIO ";" EXTENSIONS_PLAYLIST
+
 struct mpv_source {
     // basic source stuff
     uint32_t width;
     uint32_t height;
     obs_source_t* src;
     bool osc; // mpv on screen controller
-    const char* file_path;
+    DARRAY(char*) files;
+    struct dstr last_path;
+    bool shuffle;
+    bool loop;
 
     // mpv handles/thread stuff
     mpv_handle* mpv;
@@ -33,6 +118,9 @@ struct mpv_source {
     bool file_loaded;
     volatile long media_state;
     int audio_backend;
+    // when obs starts up we can't load the playlist since the core isn't initialized yet
+    // so we save it here and load it when the core is ready
+    char* queued_temp_playlist_file_path;
 
     DARRAY(struct mpv_track_info)
     tracks;

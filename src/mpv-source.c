@@ -1,15 +1,100 @@
-#include <inttypes.h>
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <obs-nix-platform.h>
 #include <plugin-support.h>
-#include <util/dstr.h>
 #include <util/platform.h>
 
 #include "mpv-backend.h"
 #include "mpv-source.h"
 
 /* Misc functions ---------------------------------------------------------- */
+
+static inline void generate_and_load_playlist(struct mpv_source* context)
+{
+    struct dstr tmp_file = { 0 };
+    struct dstr playlist = { 0 };
+    obs_data_t* settings = obs_source_get_settings(context->src);
+    obs_data_array_t* array = obs_data_get_array(settings, "playlist");
+    size_t count = obs_data_array_count(array);
+
+    DARRAY(char*)
+    tmp;
+    da_init(tmp);
+
+    for (size_t i = 0; i < count; i++) {
+        obs_data_t* item = obs_data_array_item(array, i);
+        const char* path = obs_data_get_string(item, "value");
+        if (!path || !*path) {
+            obs_data_release(item);
+            continue;
+        }
+        if (os_file_exists(path)) {
+            char* p = bstrdup(path);
+            da_push_back(tmp, &p);
+        }
+        obs_data_release(item);
+    }
+
+    if (tmp.num == 0) {
+        MPV_SEND_COMMAND_ASYNC("playlist-clear");
+        MPV_SEND_COMMAND_ASYNC("stop");
+        da_clear(context->files);
+        goto end;
+    }
+
+    dstr_copy(&context->last_path, tmp.array[0]);
+    dstr_replace(&context->last_path, "\\", "/");
+    const char* slash = strrchr(context->last_path.array, '/');
+    if (slash)
+        dstr_resize(&context->last_path, slash - context->last_path.array + 1);
+
+    // check if the new playlist differs from the old one
+    if (tmp.num == context->files.num) {
+        bool same = true;
+        for (size_t i = 0; i < tmp.num; i++) {
+            if (strcmp(tmp.array[i], context->files.array[i]) != 0) {
+                same = false;
+                break;
+            }
+        }
+        if (same) {
+            for (size_t i = 0; i < tmp.num; i++)
+                bfree(tmp.array[i]);
+            goto end;
+        }
+    }
+
+    for (size_t i = 0; i < context->files.num; i++)
+        bfree(context->files.array[i]);
+    da_clear(context->files);
+    da_copy(context->files, tmp);
+
+    // write files to .m3u playlist
+    for (size_t i = 0; i < context->files.num; i++)
+        dstr_catf(&playlist, "%s\n", context->files.array[i]);
+
+    int random = rand();
+    dstr_catf(&tmp_file, "%s/%i-obs-mpv-playlist.m3u", TMP_DIR, random);
+    os_quick_write_utf8_file(tmp_file.array, playlist.array, playlist.len, false);
+
+    if (context->files.num > 0) {
+        context->file_loaded = false;
+        if (!context->init) {
+            // the core hasn't been initialized yet, so we just remember the path to load it later
+            bfree(context->queued_temp_playlist_file_path);
+            context->queued_temp_playlist_file_path = bstrdup(tmp_file.array);
+        } else {
+            mpvs_load_file(context, tmp_file.array);
+        }
+    }
+
+end:
+    da_free(tmp);
+    obs_data_array_release(array);
+    dstr_free(&tmp_file);
+    dstr_free(&playlist);
+    obs_data_release(settings);
+}
 
 static inline void create_jack_capture(struct mpv_source* context)
 {
@@ -21,7 +106,7 @@ static inline void create_jack_capture(struct mpv_source* context)
     // so just reuse it
     context->jack_source = obs_get_source_by_name(str.array);
     if (!context->jack_source) {
-        // selecteds are fine
+        // defaults are fine
         obs_data_t* data = obs_data_create();
         context->jack_source = obs_source_create("jack_output_capture", str.array, data, NULL);
         obs_data_release(data);
@@ -145,35 +230,46 @@ static void mpvs_source_destroy(void* data)
     obs_leave_graphics();
 
     // free all tracks
-    for (size_t i = 0; i < context->tracks.num; i++) {
+    for (size_t i = 0; i < context->tracks.num; i++)
         destroy_mpv_track_info(&context->tracks.array[i]);
-    }
     da_free(context->tracks);
 
+    for (size_t i = 0; i < context->files.num; i++)
+        bfree(context->files.array[i]);
+    da_free(context->files);
+
+    bfree(context->queued_temp_playlist_file_path);
     destroy_jack_source(context);
+    dstr_free(&context->last_path);
     bfree(data);
 }
 
 static void mpvs_source_update(void* data, obs_data_t* settings)
 {
     struct mpv_source* context = data;
-    const char* path = obs_data_get_string(settings, "file");
     context->osc = obs_data_get_bool(settings, "osc");
-
-    if (!context->file_path || strcmp(path, context->file_path) != 0) {
-        context->file_loaded = false;
-        context->file_path = path;
-        if (context->init)
-            mpvs_load_file(context);
-    }
 
     int audio_track = obs_data_get_int(settings, "audio_track");
     int video_track = obs_data_get_int(settings, "video_track");
     int sub_track = obs_data_get_int(settings, "sub_track");
 
+    generate_and_load_playlist(context);
+
+    bool loop = obs_data_get_bool(settings, "loop");
+    bool shuffle = obs_data_get_bool(settings, "shuffle");
+
+    if (context->shuffle != shuffle) {
+        context->shuffle = shuffle;
+        MPV_SEND_COMMAND_ASYNC(shuffle ? "playlist-shuffle" : "playlist-unshuffle");
+    }
+
+    if (context->loop != loop) {
+        context->loop = loop;
+        MPV_SEND_COMMAND_ASYNC("set", "loop", loop ? "inf" : "no");
+    }
+
     // select the current tracks
-    struct dstr str;
-    dstr_init(&str);
+    struct dstr str = { 0 };
 
     if (audio_track != context->current_audio_track) {
         context->current_audio_track = audio_track;
@@ -226,21 +322,41 @@ static obs_properties_t* mpvs_source_properties(void* data)
     struct mpv_source* context = data;
     obs_properties_t* props = obs_properties_create();
 
-    struct dstr filter_str = { 0 };
-    dstr_copy(&filter_str, "Webm (*.webm)");
-    dstr_cat(&filter_str, "all files");
-    dstr_cat(&filter_str, " (*.*)");
+    // Add file list property for playlist files
+    struct dstr filter = { 0 };
+    struct dstr exts = { 0 };
 
-    obs_property_t* file_prop = obs_properties_add_path(props, "file", obs_module_text("File"), OBS_PATH_FILE, filter_str.array, NULL);
-    obs_property_set_modified_callback(file_prop, mpvs_file_changed);
+    dstr_cat(&filter, "Media Files (");
+    dstr_copy(&exts, EXTENSIONS_MEDIA);
+    dstr_replace(&exts, ";", " ");
+    dstr_cat_dstr(&filter, &exts);
 
-    dstr_free(&filter_str);
+    dstr_cat(&filter, ");;Video Files (");
+    dstr_copy(&exts, EXTENSIONS_VIDEO);
+    dstr_replace(&exts, ";", " ");
+    dstr_cat_dstr(&filter, &exts);
+
+    dstr_cat(&filter, ");;Audio Files (");
+    dstr_copy(&exts, EXTENSIONS_AUDIO);
+    dstr_replace(&exts, ";", " ");
+    dstr_cat_dstr(&filter, &exts);
+
+    dstr_cat(&filter, ");;Playlist Files (");
+    dstr_copy(&exts, EXTENSIONS_PLAYLIST);
+    dstr_replace(&exts, ";", " ");
+    dstr_cat_dstr(&filter, &exts);
+    dstr_cat(&filter, ")");
+
+    obs_properties_add_editable_list(props, "playlist", obs_module_text("Playlist"), OBS_EDITABLE_LIST_TYPE_FILES_AND_URLS, filter.array, context->last_path.array);
+
+    obs_properties_add_bool(props, "shuffle", obs_module_text("Shuffle"));
+    obs_properties_add_bool(props, "loop", obs_module_text("Loop"));
 
     obs_properties_add_bool(props, "osc", obs_module_text("EnableOSC"));
 
     obs_property_t* video_tracks = obs_properties_add_list(props, "video_track", obs_module_text("VideoTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
     obs_property_t* audio_tracks = obs_properties_add_list(props, "audio_track", obs_module_text("AudioTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-    obs_property_t* sub_tracks = obs_properties_add_list(props, "sub_track", obs_module_text("SubTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+    obs_property_t* sub_tracks = obs_properties_add_list(props, "sub_track", obs_module_text("SubtitleTrack"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 
     obs_property_set_enabled(video_tracks, context->file_loaded);
     obs_property_set_enabled(audio_tracks, context->file_loaded);
@@ -261,12 +377,13 @@ static obs_properties_t* mpvs_source_properties(void* data)
     if (mpvs_have_jack_capture_source) {
         obs_property_t* cb = obs_properties_add_bool(props, "internal_audio_control", obs_module_text("InternalAudioControl"));
         obs_property_set_modified_callback(cb, mpvs_internal_audio_control_modified);
+        obs_property_set_long_description(cb, obs_module_text("AudioControlHint"));
     }
 
     obs_property_t* audio_driver_list = obs_properties_add_list(props, "audio_driver", obs_module_text("AudioDriver"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 
     for (size_t i = 0; audio_backends[i]; i++) {
-        size_t index = obs_property_list_add_int(audio_driver_list, audio_backends[i], i);
+        size_t index = obs_property_list_add_int(audio_driver_list, audio_backends[i], (int)i);
 
         // This source is always created so it can only be null if obs
         // doesn't have the jack plugin
@@ -275,6 +392,15 @@ static obs_properties_t* mpvs_source_properties(void* data)
         }
     }
 
+    int mpv_major_version = MPV_CLIENT_API_VERSION >> 16;
+    int mpv_minor_version = MPV_CLIENT_API_VERSION & 0xffff;
+    struct dstr about = {0};
+    dstr_printf(&about, "Based on <a href=\"https://mpv.io\">libmpv</a> version %i.%i<br> Plugin by <a href=\"https://vrsal.xyz/$\">univrsal</a>", mpv_major_version, mpv_minor_version);
+    obs_properties_add_text(props, "about", about.array, OBS_TEXT_INFO);
+
+    dstr_free(&about);
+    dstr_free(&filter);
+    dstr_free(&exts);
     return props;
 }
 
@@ -322,8 +448,9 @@ static void mpvs_play_pause(void* data, bool pause)
 
 static void mpvs_restart(void* data)
 {
+    // todo, this should probably restart the current file
     struct mpv_source* context = data;
-    mpvs_load_file(context);
+    generate_and_load_playlist(context);
 }
 
 static void mpvs_stop(void* data)

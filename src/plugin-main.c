@@ -22,9 +22,40 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 
 OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 extern struct obs_source_info mpv_source_info;
 int mpvs_have_jack_capture_source = 0;
+
+lookup_t* vlc_video_lookup = NULL;
+lookup_t* obs_module_lookup = NULL;
+
+/* Forwards lookups to the vlc-video module which has the strings for the
+ * portion of this source
+ */
+const char* obs_module_text(const char* val)
+{
+    const char* out = val;
+    if (!text_lookup_getstr(vlc_video_lookup, val, &out))
+        text_lookup_getstr(obs_module_lookup, val, &out);
+    return out;
+}
+
+void obs_module_set_locale(const char* locale)
+{
+    if (vlc_video_lookup)
+        text_lookup_destroy(vlc_video_lookup);
+    if (obs_module_lookup)
+        text_lookup_destroy(obs_module_lookup);
+    vlc_video_lookup = obs_module_load_locale(obs_get_module("vlc-video"), "en-US", locale);
+    obs_module_lookup = obs_module_load_locale(obs_current_module(), "en-US", locale);
+}
+
+void obs_module_free_locale(void)
+{
+    text_lookup_destroy(vlc_video_lookup);
+    text_lookup_destroy(obs_module_lookup);
+    vlc_video_lookup = NULL;
+    obs_module_lookup = NULL;
+}
 
 bool obs_module_load(void)
 {

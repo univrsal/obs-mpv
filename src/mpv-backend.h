@@ -4,6 +4,10 @@
 #include <mpv/client.h>
 #include <obs-module.h>
 
+enum mpv_command_replies {
+    MPVS_PLAYLIST_LOADED = 0x10000,
+};
+
 enum mpv_track_type {
     MPV_TRACK_TYPE_AUDIO,
     MPV_TRACK_TYPE_VIDEO,
@@ -178,7 +182,7 @@ void mpvs_init_track(struct mpv_source* context, struct mpv_track_info* info, mp
 
 void mpvs_init(struct mpv_source* context);
 
-void mpvs_load_file(struct mpv_source* context);
+void mpvs_load_file(struct mpv_source* context, const char* playlist_file);
 
 void mpvs_set_mpv_properties(struct mpv_source* context);
 
