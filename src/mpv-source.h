@@ -102,6 +102,7 @@ struct mpv_source {
     bool osc; // mpv on screen controller
     DARRAY(char*) files;
     struct dstr last_path;
+    char* tmp_playlist_path;
     bool shuffle;
     bool loop;
 

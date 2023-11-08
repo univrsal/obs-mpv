@@ -17,6 +17,13 @@ static inline void generate_and_load_playlist(struct mpv_source* context)
     obs_data_array_t* array = obs_data_get_array(settings, "playlist");
     size_t count = obs_data_array_count(array);
 
+    // remove temporary playlist file
+    if (context->tmp_playlist_path) {
+        remove(context->tmp_playlist_path);
+        bfree(context->tmp_playlist_path);
+        context->tmp_playlist_path = NULL;
+    }
+
     DARRAY(char*)
     tmp;
     da_init(tmp);
@@ -89,6 +96,8 @@ static inline void generate_and_load_playlist(struct mpv_source* context)
     }
 
 end:
+    bfree(context->tmp_playlist_path);
+    context->tmp_playlist_path = bstrdup(tmp_file.array);
     da_free(tmp);
     obs_data_array_release(array);
     dstr_free(&tmp_file);
@@ -238,9 +247,16 @@ static void mpvs_source_destroy(void* data)
         bfree(context->files.array[i]);
     da_free(context->files);
 
-    bfree(context->queued_temp_playlist_file_path);
+    // remove temporary playlist file
+    if (context->tmp_playlist_path) {
+        remove(context->tmp_playlist_path);
+        bfree(context->tmp_playlist_path);
+        context->tmp_playlist_path = NULL;
+    }
+
     destroy_jack_source(context);
     dstr_free(&context->last_path);
+    bfree(context->queued_temp_playlist_file_path);
     bfree(data);
 }
 
