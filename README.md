@@ -1,6 +1,7 @@
 ## obs-mpv
 
 Adds a video source for OBS Studio using libmpv.
+[![CI](https://github.com/univrsal/obs-mpv/actions/workflows/push.yaml/badge.svg)](https://github.com/univrsal/obs-mpv/actions/workflows/push.yaml)
 
 ![screenshot](./screenshot.png)
 
@@ -14,14 +15,6 @@ Things left to fix/address
           it does depend on jack or pipewire working. An option to choose beteween
           the different audio backends (oss, sndio, alsa, pulse, jack and pipewire)
           might be useful.
-        - Both macOS and Windows would probably just have the option of playing
-          audio through the default audio device
+        - Windows just plays audio through the default audio device
 - The interact GUI works only for mouse movements, it does not react to clicks
-- Neither macOS nor Windows are currently supported
-    - macOS is technically not too difficult since obs also uses OpenGL on macOS
-      but my rule of thumb with plugins for mac are if I can't get the CI to build
-      with a few commits I just don't bother
-    - On Windows OBS uses D3D for rendering. While MPV does support Direct3D,
-      libmpv does not offer an option to use it, so we'd either have to modify
-      libmpv to offer the option of using d3d or render with OpenGL and then copy
-      into the D3D texture. I have not bothered looking into this
+- Windows can't use Direct3D for rendering and instead copies from OpenGL which is a bit inefficient
