@@ -59,8 +59,10 @@ static inline void generate_and_load_playlist(struct mpv_source* context)
     if (slash)
         dstr_resize(&context->last_path, slash - context->last_path.array + 1);
 
+    // if this is true the user clicked "restart"
+    bool ended_or_stopped = context->media_state == OBS_MEDIA_STATE_STOPPED || context->media_state == OBS_MEDIA_STATE_ENDED;
     // check if the new playlist differs from the old one
-    if (tmp.num == context->files.num) {
+    if (tmp.num == context->files.num && !ended_or_stopped) {
         bool same = true;
         for (size_t i = 0; i < tmp.num; i++) {
             if (strcmp(tmp.array[i], context->files.array[i]) != 0) {
