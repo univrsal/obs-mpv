@@ -1,9 +1,10 @@
 ## obs-mpv
 
 Adds a video source for OBS Studio using libmpv.
-[![CI](https://github.com/univrsal/obs-mpv/actions/workflows/push.yaml/badge.svg)](https://github.com/univrsal/obs-mpv/actions/workflows/push.yaml)
 
 ![screenshot](./screenshot.png)
+
+[![CI](https://github.com/univrsal/obs-mpv/actions/workflows/push.yaml/badge.svg)](https://github.com/univrsal/obs-mpv/actions/workflows/push.yaml)
 
 Things left to fix/address
 - Maybe add option to load a custom mpv.conf file and the option to set mpv properties/settings
