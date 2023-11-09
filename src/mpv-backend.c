@@ -50,7 +50,7 @@ static void handle_mpvs_events(void* ctx)
 static void* get_proc_address_mpvs(void* ctx, const char* name)
 {
     UNUSED_PARAMETER(ctx);
-    void* addr = eglGetProcAddress(name);
+    void* addr = GLAD_GET_PROC_ADDR(name);
     return addr;
 }
 
@@ -70,7 +70,6 @@ static inline void mpvs_handle_file_loaded(struct mpv_source* context)
 
     for (size_t i = 0; i < context->tracks.num; i++)
         destroy_mpv_track_info(&context->tracks.array[i]);
-    da_clear(context->tracks);
     da_resize(context->tracks, tracks.u.list->num);
     context->audio_tracks = 1;
     context->video_tracks = 1;
@@ -176,8 +175,8 @@ void mpvs_handle_events(struct mpv_source* context)
             // Retrieve the new video size.
             int64_t w, h;
             if (mpv_get_property(context->mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 && mpv_get_property(context->mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 && w > 0 && h > 0) {
-                context->width = w;
-                context->height = h;
+                context->width = (uint32_t) w;
+                context->height = (uint32_t) h;
                 mpvs_generate_texture(context);
             }
         } else if (event->event_id == MPV_EVENT_START_FILE) {

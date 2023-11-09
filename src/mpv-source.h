@@ -7,6 +7,11 @@
 #include <util/dstr.h>
 #include <util/threading.h>
 
+#if defined(WIN32)
+#    define GLAD_GET_PROC_ADDR wglGetProcAddress
+#else
+#    define GLAD_GET_PROC_ADDR eglGetProcAddress
+#endif
 extern int mpvs_have_jack_capture_source;
 
 #define util_min(a, b) ((a) < (b) ? (a) : (b))
@@ -140,6 +145,7 @@ struct mpv_source {
     PFNGLFRAMEBUFFERTEXTURE2DPROC _glFramebufferTexture2D;
     PFNGLGETINTEGERVPROC _glGetIntegerv;
     PFNGLUSEPROGRAMPROC _glUseProgram;
+    PFNGLREADPIXELSPROC _glReadPixels;
 
     // jack source for audio
     obs_source_t* jack_source;

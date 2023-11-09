@@ -1,10 +1,13 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
+#if !defined(WIN32)
 #include <obs-nix-platform.h>
+#endif
 #include <plugin-support.h>
 #include <util/platform.h>
 
 #include "mpv-backend.h"
+#include <util/darray.h>
 #include "mpv-source.h"
 
 /* Misc functions ---------------------------------------------------------- */
@@ -45,7 +48,7 @@ static inline void generate_and_load_playlist(struct mpv_source* context)
     if (tmp.num == 0) {
         MPV_SEND_COMMAND_ASYNC("playlist-clear");
         MPV_SEND_COMMAND_ASYNC("stop");
-        da_clear(context->files);
+        da_resize(context->files, 0);
         goto end;
     }
 
@@ -73,7 +76,7 @@ static inline void generate_and_load_playlist(struct mpv_source* context)
 
     for (size_t i = 0; i < context->files.num; i++)
         bfree(context->files.array[i]);
-    da_clear(context->files);
+    da_resize(context->files, 0);
     da_copy(context->files, tmp);
 
     // write files to .m3u playlist
@@ -179,12 +182,13 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->height = 512;
     context->src = source;
     context->redraw = true;
-    context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)eglGetProcAddress("glGenFramebuffers");
-    context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)eglGetProcAddress("glDeleteFramebuffers");
-    context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)eglGetProcAddress("glBindFramebuffer");
-    context->_glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC)eglGetProcAddress("glFramebufferTexture2D");
-    context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)eglGetProcAddress("glGetIntegerv");
-    context->_glUseProgram = (PFNGLUSEPROGRAMPROC)eglGetProcAddress("glUseProgram");
+    context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glGenFramebuffers");
+    context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glDeleteFramebuffers");
+    context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)GLAD_GET_PROC_ADDR("glBindFramebuffer");
+    context->_glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC)GLAD_GET_PROC_ADDR("glFramebufferTexture2D");
+    context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)GLAD_GET_PROC_ADDR("glGetIntegerv");
+    context->_glUseProgram = (PFNGLUSEPROGRAMPROC)GLAD_GET_PROC_ADDR("glUseProgram");
+    context->_glReadPixels = (PFNGLREADPIXELSPROC)GLAD_GET_PROC_ADDR("glReadPixels");
     context->audio_backend = mpvs_audio_driver_to_index(MPVS_DEFAULT_AUDIO_DRIVER);
 
     da_init(context->tracks);
@@ -265,9 +269,9 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
     struct mpv_source* context = data;
     context->osc = obs_data_get_bool(settings, "osc");
 
-    int audio_track = obs_data_get_int(settings, "audio_track");
-    int video_track = obs_data_get_int(settings, "video_track");
-    int sub_track = obs_data_get_int(settings, "sub_track");
+    int audio_track = (int) obs_data_get_int(settings, "audio_track");
+    int video_track = (int)obs_data_get_int(settings, "video_track");
+    int sub_track = (int) obs_data_get_int(settings, "sub_track");
 
     generate_and_load_playlist(context);
 
@@ -314,7 +318,7 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
         obs_source_add_active_child(context->src, context->jack_source);
     } else {
         obs_source_remove_active_child(context->src, context->jack_source);
-        context->audio_backend = obs_data_get_int(settings, "audio_driver");
+        context->audio_backend = (int) obs_data_get_int(settings, "audio_driver");
     }
 
     mpvs_set_audio_backend(context, context->audio_backend);
@@ -423,7 +427,15 @@ static obs_properties_t* mpvs_source_properties(void* data)
 static void mpvs_source_render(void* data, gs_effect_t* effect)
 {
     struct mpv_source* context = data;
-
+#if defined(WIN32)
+    uint8_t* ptr;
+    uint32_t linesize;
+    if (gs_texture_map(context->video_buffer, &ptr, &linesize)) {
+        context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
+        context->_glReadPixels(0, 0, context->width, context->height, GL_RGBA, GL_UNSIGNED_BYTE, ptr);
+    }
+    gs_texture_unmap(context->video_buffer);
+#endif
     const bool previous = gs_framebuffer_srgb_enabled();
     gs_enable_framebuffer_srgb(true);
 
@@ -502,7 +514,7 @@ static int64_t mpvs_get_duration(void* data)
         obs_log(LOG_ERROR, "Error getting duration: %s", mpv_error_string(error));
         return 0;
     }
-    return floor(duration) * 1000;
+    return (int64_t) floor(duration) * 1000;
 }
 
 static int64_t mpvs_get_time(void* data)
@@ -521,7 +533,7 @@ static int64_t mpvs_get_time(void* data)
         obs_log(LOG_ERROR, "Error getting playback time: %s", mpv_error_string(error));
         return 0;
     }
-    return floor(playback_time) * 1000;
+    return (int64_t) floor(playback_time) * 1000;
 }
 
 static void mpvs_set_time(void* data, int64_t ms)
@@ -569,7 +581,7 @@ static void mpvs_mouse_click(void* data, const struct obs_mouse_event* event,
     nodes.array[4].u.string = click_count > 1 ? "double" : "single";
 
     mpv_node_list list;
-    list.num = nodes.num;
+    list.num = (int)nodes.num;
     list.values = nodes.array;
 
     mpv_node main;

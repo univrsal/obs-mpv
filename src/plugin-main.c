@@ -60,7 +60,11 @@ void obs_module_free_locale(void)
 bool obs_module_load(void)
 {
     // init glad
+#if defined(WIN32)
+    
+#else
     gladLoadEGL();
+#endif
     obs_register_source(&mpv_source_info);
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)",
         PLUGIN_VERSION);

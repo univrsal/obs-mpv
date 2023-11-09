@@ -16,11 +16,22 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 add_subdirectory(deps)
 
 find_package(libobs REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(MPV REQUIRED IMPORTED_TARGET mpv)
+if (UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(MPV REQUIRED IMPORTED_TARGET mpv)
+else()
+    set(MPV_LIBRARIES "${CMAKE_CURRENT_SOURCE_DIR}/deps/libmpv/libmpv.dll.a")
+    set(MPV_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/deps/libmpv/include")
+    # Copy dependencies
+    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/deps/libmpv/libmpv-2.dll"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>)
 
+endif()
+message(STATUS ${MPV_INCLUDE_DIRS})
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs ${MPV_LIBRARIES} OBS::glad)
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${MPV_INCLUDE_DIRS})
+target_include_directories(${CMAKE_PROJECT_NAME} PUBLIC "${MPV_INCLUDE_DIRS}")
 
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
