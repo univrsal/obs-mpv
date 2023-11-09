@@ -36,7 +36,7 @@ else()
       COMMENT "Copy ${target} to obs-studio directory ${OBS_BUILD_DIR}"
       VERBATIM)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/deps/libmpv/libmpv-2.dll"
-        CONFIGURATIONS RelWithDebInfo Debug
+        CONFIGURATIONS RelWithDebInfo Debug Release
         DESTINATION obs-plugins/64bit)
     target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/wgl.c src/wgl.h)
 endif()
