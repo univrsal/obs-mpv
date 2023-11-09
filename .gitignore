@@ -26,3 +26,6 @@
 
 # Exclude CMake build number cache
 /cmake/.CMakeBuildNumber
+
+deps/libmpv/
+deps/libmpv.7z
