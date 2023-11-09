@@ -445,7 +445,7 @@ void mpvs_generate_texture(struct mpv_source* context)
 #if defined(WIN32)
      if (context->video_buffer) 
         gs_texture_destroy(context->video_buffer);
-     context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_DYNAMIC);
+     context->video_buffer = gs_texture_create(context->d3d_width, context->d3d_height, GS_RGBA, 1, NULL, GS_DYNAMIC);
 
      context->_glBindTexture(GL_TEXTURE_2D, 0);
 

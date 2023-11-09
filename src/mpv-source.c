@@ -453,7 +453,7 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
     uint32_t linesize;
     if (gs_texture_map(context->video_buffer, &ptr, &linesize)) {
         context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
-        context->_glReadPixels(0, 0, context->width, context->height, GL_RGBA, GL_UNSIGNED_BYTE, ptr);
+        context->_glReadPixels(0, 0, context->d3d_width, context->d3d_height, GL_RGBA, GL_UNSIGNED_BYTE, ptr);
     }
     gs_texture_unmap(context->video_buffer);
 #endif
@@ -466,7 +466,7 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
     gs_eparam_t* const param = gs_effect_get_param_by_name(effect, "image");
     gs_effect_set_texture_srgb(param, context->video_buffer);
 
-    gs_draw_sprite(context->video_buffer, 0, context->width, context->height);
+    gs_draw_sprite(context->video_buffer, 0, context->d3d_width, context->d3d_height);
 
     gs_blend_state_pop();
     gs_enable_framebuffer_srgb(previous);
