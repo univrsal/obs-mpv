@@ -404,12 +404,14 @@ void mpvs_set_mpv_properties(struct mpv_source* context)
     MPV_SET_PROP_STR("video-timing-offset", "0");
 
     // We only want to auto connect if internal audio control is on
-    if (context->audio_backend < 0 && context->jack_port_name)
-        MPV_SET_PROP_STR("jack-port", context->jack_port_name);
-    else
-        MPV_SET_PROP_STR("jack-port", "");
-    if (context->jack_client_name)
-        MPV_SET_PROP_STR("jack-name", context->jack_client_name);
+    if (mpvs_have_jack_capture_source) {
+        if (context->audio_backend < 0 && context->jack_port_name)
+            MPV_SET_PROP_STR("jack-port", context->jack_port_name);
+        else
+            MPV_SET_PROP_STR("jack-port", "");
+        if (context->jack_client_name)
+            MPV_SET_PROP_STR("jack-name", context->jack_client_name);
+    }
 
     uint32_t sample_rate = 0;
     MPV_SET_PROP_STR("audio-channels", mpvs_obs_channel_layout_to_mpv(&sample_rate));
