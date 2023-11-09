@@ -208,11 +208,13 @@ void mpvs_handle_events(struct mpv_source* context)
 
 void mpvs_render(struct mpv_source* context)
 {
+#if !defined(WIN32)
     // make sure that we restore the current program after mpv is done
     // as obs will not load the progam because it internally keeps track
     // of the current program and only loads it if it has changed
     GLuint currentProgram;
     context->_glGetIntegerv(GL_CURRENT_PROGRAM, (GLint*)&currentProgram);
+#endif
     mpv_render_frame_info info;
 
     mpv_render_param params[] = {
@@ -231,7 +233,21 @@ void mpvs_render(struct mpv_source* context)
     if (result != 0)
         obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
 
+#if defined(WIN32)
+    if (context->media_state == OBS_MEDIA_STATE_PLAYING) {
+        uint8_t* ptr;
+        uint32_t linesize;
+        if (gs_texture_map(context->video_buffer, &ptr, &linesize)) {
+            context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
+            context->_glReadPixels(0, 0, context->d3d_width, context->d3d_height, GL_RGBA, GL_UNSIGNED_BYTE, ptr);
+        }
+        gs_texture_unmap(context->video_buffer);
+    }
+#endif
+
+#if !defined(WIN32)
     context->_glUseProgram(currentProgram);
+#endif
 }
 
 void mpvs_init(struct mpv_source* context)

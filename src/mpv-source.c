@@ -448,15 +448,11 @@ static obs_properties_t* mpvs_source_properties(void* data)
 static void mpvs_source_render(void* data, gs_effect_t* effect)
 {
     struct mpv_source* context = data;
-#if defined(WIN32)
-    uint8_t* ptr;
-    uint32_t linesize;
-    if (gs_texture_map(context->video_buffer, &ptr, &linesize)) {
-        context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
-        context->_glReadPixels(0, 0, context->d3d_width, context->d3d_height, GL_RGBA, GL_UNSIGNED_BYTE, ptr);
-    }
-    gs_texture_unmap(context->video_buffer);
-#endif
+
+    bool stopped_or_ended = context->media_state == OBS_MEDIA_STATE_ENDED || context->media_state == OBS_MEDIA_STATE_STOPPED;
+
+    if (stopped_or_ended)
+        return; // don't render the black texture
     const bool previous = gs_framebuffer_srgb_enabled();
     gs_enable_framebuffer_srgb(true);
 
