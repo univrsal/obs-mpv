@@ -103,6 +103,10 @@ struct mpv_source {
     // basic source stuff
     uint32_t width;
     uint32_t height;
+
+	uint32_t d3d_width;
+    uint32_t d3d_height;
+
     obs_source_t* src;
     bool osc; // mpv on screen controller
     DARRAY(char*) files;

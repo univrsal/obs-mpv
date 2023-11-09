@@ -2,6 +2,7 @@
 #include <obs-frontend-api.h>
 #include <util/darray.h>
 #include <util/dstr.h>
+#include "wgl.h"
 
 const char* audio_backends[] = {
 #if defined(__linux__)
@@ -177,6 +178,9 @@ void mpvs_handle_events(struct mpv_source* context)
             if (mpv_get_property(context->mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 && mpv_get_property(context->mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 && w > 0 && h > 0) {
                 context->width = (uint32_t) w;
                 context->height = (uint32_t) h;
+#if defined(WIN32)
+                calc_texture_size(w, h, &context->d3d_width, &context->d3d_height);
+#endif
                 mpvs_generate_texture(context);
             }
         } else if (event->event_id == MPV_EVENT_START_FILE) {
@@ -234,6 +238,25 @@ void mpvs_init(struct mpv_source* context)
 {
     if (context->init_failed)
         return;
+
+#if defined(WIN32)
+    if (!wgl_init()) {
+        context->init_failed = true;
+        return;
+    }
+    context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glGenFramebuffers");
+    context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glDeleteFramebuffers");
+    context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)GLAD_GET_PROC_ADDR("glBindFramebuffer");
+    context->_glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC)GLAD_GET_PROC_ADDR("glFramebufferTexture2D");
+    context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)GLAD_GET_PROC_ADDR("glGetIntegerv");
+    context->_glUseProgram = (PFNGLUSEPROGRAMPROC)GLAD_GET_PROC_ADDR("glUseProgram");
+    context->_glReadPixels = (PFNGLREADPIXELSPROC)GLAD_GET_PROC_ADDR("glReadPixels");
+    context->_glGenTextures = (PFNGLGENTEXTURESPROC)GLAD_GET_PROC_ADDR("glGenTextures");
+    context->_glBindTexture = (PFNGLBINDTEXTUREPROC)GLAD_GET_PROC_ADDR("glBindTexture");
+    context->_glTexParameteri = (PFNGLTEXPARAMETERIPROC)GLAD_GET_PROC_ADDR("glTexParameteri");
+    context->_glDeleteTextures = (PFNGLDELETETEXTURESPROC)GLAD_GET_PROC_ADDR("glDeleteTextures");
+    context->_glTexImage2D = (PFNGLTEXIMAGE2DPROC)GLAD_GET_PROC_ADDR("glTexImage2D");
+#endif
     context->init = true;
     context->mpv = mpv_create();
 
@@ -417,14 +440,11 @@ void mpvs_set_mpv_properties(struct mpv_source* context)
 
 void mpvs_generate_texture(struct mpv_source* context)
 {
-    if (context->video_buffer) {
-        gs_texture_destroy(context->video_buffer);
-        context->_glDeleteFramebuffers(1, &context->fbo);
-    }
-
-     context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
-
 #if defined(WIN32)
+     if (context->video_buffer) 
+        gs_texture_destroy(context->video_buffer);
+     context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_DYNAMIC);
+
      context->_glBindTexture(GL_TEXTURE_2D, 0);
 
      if (context->fbo)
@@ -434,7 +454,7 @@ void mpvs_generate_texture(struct mpv_source* context)
 
     context->_glGenTextures(1, &context->wgl_texture);
     context->_glBindTexture(GL_TEXTURE_2D, context->wgl_texture);
-    context->_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, context->width, context->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    context->_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, context->d3d_width, context->d3d_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -444,6 +464,13 @@ void mpvs_generate_texture(struct mpv_source* context)
     context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
     context->_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, context->wgl_texture, 0);
 #else
+    if (context->video_buffer) {
+        gs_texture_destroy(context->video_buffer);
+        context->_glDeleteFramebuffers(1, &context->fbo);
+    }
+
+    context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
+
     gs_set_render_target(context->video_buffer, NULL);
     if (context->fbo)
         context->_glDeleteFramebuffers(1, &context->fbo);

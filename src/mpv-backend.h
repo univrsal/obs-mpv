@@ -178,6 +178,14 @@ static inline int mpvs_mpv_log_level_to_obs(mpv_log_level lvl)
     }
 }
 
+static inline void calc_texture_size(int64_t w, int64_t h, uint32_t* u, uint32_t* v)
+{
+
+    *u = (uint32_t)pow(2, ceil(log2((double)w)));
+
+    *v = (uint32_t)pow(2, ceil(log2((double)h)));
+}
+
 void mpvs_init_track(struct mpv_source* context, struct mpv_track_info* info, mpv_node* node);
 
 void mpvs_init(struct mpv_source* context);

@@ -61,10 +61,7 @@ void obs_module_free_locale(void)
 bool obs_module_load(void)
 {
     // init glad
-#if defined(WIN32)
-    if (!wgl_init())
-        return false;
-#else
+#if !defined(WIN32)
     gladLoadEGL();
 #endif
     obs_register_source(&mpv_source_info);
@@ -85,7 +82,5 @@ void obs_module_unload(void)
     obs_log(LOG_INFO, "plugin unloaded");
 #if defined(WIN32)
     wgl_deinit();
-#else
-    gladUnloadEGL();
 #endif
 }

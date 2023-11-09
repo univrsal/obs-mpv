@@ -10,7 +10,7 @@ HWND hwnd;
 HGLRC hrc;
 HDC hdc;
 
-static const char* dummy_window_class = "GLDummyWindow";
+static const char* dummy_window_class = "GLDummyWindow-obs-mpv";
 static bool registered_dummy_window_class = false;
 
 struct dummy_context {
@@ -205,35 +205,6 @@ static inline HGLRC gl_init_context(HDC hdc)
     return hglrc;
 }
 
-static inline void required_extension_error(const char* extension)
-{
-    obs_log(LOG_ERROR, "OpenGL extension %s is required", extension);
-}
-
-static bool gl_init_extensions(HDC hdc)
-{
-    if (!gladLoadWGL(hdc)) {
-        blog(LOG_ERROR, "Failed to load WGL entry functions.");
-        return false;
-    }
-
-    //if (!GLAD_WGL_ARB_pixel_format) {
-    //    required_extension_error("ARB_pixel_format");
-    //    return false;
-    //}
-
-    //if (!GLAD_WGL_ARB_create_context) {
-    //    required_extension_error("ARB_create_context");
-    //    return false;
-    //}
-
-    //if (!GLAD_WGL_ARB_create_context_profile) {
-    //    required_extension_error("ARB_create_context_profile");
-    //    return false;
-    //}
-
-    return true;
-}
 
 static inline void add_attrib(struct darray* list, int attrib, int val)
 {
@@ -331,12 +302,60 @@ static inline bool gl_getpixelformat(HDC hdc, const struct gs_init_data* info,
     return true;
 }
 
+static inline bool gl_setpixelformat(HDC hdc, int format,
+    PIXELFORMATDESCRIPTOR* pfd)
+{
+    if (!SetPixelFormat(hdc, format, pfd)) {
+        blog(LOG_ERROR, "SetPixelFormat failed, %lu", GetLastError());
+        return false;
+    }
+
+    return true;
+}
+
+static inline void required_extension_error(const char* extension)
+{
+    blog(LOG_ERROR, "OpenGL extension %s is required", extension);
+}
+
+static bool gl_init_extensions(HDC hdc)
+{
+    if (!gladLoadWGL(hdc)) {
+        blog(LOG_ERROR, "Failed to load WGL entry functions.");
+        return false;
+    }
+
+    if (!GLAD_WGL_ARB_pixel_format) {
+        required_extension_error("ARB_pixel_format");
+        return false;
+    }
+
+    if (!GLAD_WGL_ARB_create_context) {
+        required_extension_error("ARB_create_context");
+        return false;
+    }
+
+    if (!GLAD_WGL_ARB_create_context_profile) {
+        required_extension_error("ARB_create_context_profile");
+        return false;
+    }
+
+    return true;
+}
+
 bool wgl_init()
 {
+    static bool initialized = false;
+    static bool init_result = false;
+    if (initialized)
+        return init_result;
+    initialized = true;
+
     struct dummy_context dummy = { 0 };
-    //struct gs_init_data info = { 0 };
-    //int pixel_format;
-    //PIXELFORMATDESCRIPTOR pfd;
+    struct gs_init_data info = { 0 };
+    info.format = gs_get_format_from_space(gs_get_color_space());
+    int pixel_format;
+    PIXELFORMATDESCRIPTOR pfd;
     if (!gl_dummy_context_init(&dummy))
         goto fail;
     if (!gl_init_extensions(dummy.hdc))
@@ -346,10 +365,12 @@ bool wgl_init()
     if (!create_dummy_window())
         return false;
 
-    /*if (!gl_getpixelformat(dummy.hdc, &info, &pixel_format, &pfd))
-        goto fail;*/
-
+    if (!gl_getpixelformat(dummy.hdc, &info, &pixel_format, &pfd))
+        goto fail;
     gl_dummy_context_free(&dummy);
+
+    if (!gl_setpixelformat(hdc, pixel_format, &pfd))
+        goto fail;
 
     hrc = gl_init_context(hdc);
     if (!wglMakeCurrent(hdc, hrc)) {
@@ -357,7 +378,6 @@ bool wgl_init()
             GetLastError());
         return false;
     }
-
     
     // Initialize Glad
     if (!gladLoadGL()) {
@@ -369,6 +389,7 @@ bool wgl_init()
     if (glVersion) {
         obs_log(LOG_INFO, "OpenGL Version: %s\n", glVersion);
     }
+    init_result = true;
     return true;
 fail:
     gl_dummy_context_free(&dummy);

@@ -184,21 +184,7 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->height = 512;
     context->src = source;
     context->redraw = true;
-#if defined(WIN32)
-    wgl_enter_context();
-    context->_glGenFramebuffers = glGenFramebuffers;
-    context->_glDeleteFramebuffers = glDeleteFramebuffers;
-    context->_glBindFramebuffer = glBindFramebuffer;
-    context->_glFramebufferTexture2D = glFramebufferTexture2D;
-    context->_glGetIntegerv = glGetIntegerv;
-    context->_glUseProgram = glUseProgram;
-    context->_glReadPixels = glReadPixels;
-    context->_glGenTextures = glGenTextures;
-    context->_glBindTexture = glBindTexture;
-    context->_glTexParameteri = glTexParameteri;
-    context->_glDeleteTextures = glDeleteTextures;
-    context->_glTexImage2D = glTexImage2D;
-#else
+#if !defined(WIN32)
     context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glGenFramebuffers");
     context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glDeleteFramebuffers");
     context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)GLAD_GET_PROC_ADDR("glBindFramebuffer");
@@ -241,10 +227,13 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     da_push_back(context->tracks, &sub_track);
     dstr_free(&track_name);
 
+#if !defined(WIN32)
     // generates a selected texture with size 512x512, mpv will tell us the actual size later
     obs_enter_graphics();
     mpvs_generate_texture(context);
     obs_leave_graphics();
+#endif
+
 
     create_jack_capture(context);
 
