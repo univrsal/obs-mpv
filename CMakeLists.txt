@@ -27,7 +27,16 @@ else()
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/deps/libmpv/libmpv-2.dll"
         $<TARGET_FILE_DIR:${PROJECT_NAME}>)
+    add_custom_command(
+      TARGET ${PROJECT_NAME}
+      POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${OBS_BUILD_DIR}/obs-plugins/64bit"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/deps/libmpv/libmpv-2.dll"
+              "${OBS_BUILD_DIR}/obs-plugin/64bit"
+      COMMENT "Copy ${target} to obs-studio directory ${OBS_BUILD_DIR}"
+      VERBATIM)
 
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/wgl.c src/wgl.h)
 endif()
 message(STATUS ${MPV_INCLUDE_DIRS})
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs ${MPV_LIBRARIES} OBS::glad)

@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <glad/glad_egl.h>
 #include <obs-module.h>
 #include <plugin-support.h>
+#include "wgl.h"
 
 OBS_DECLARE_MODULE()
 extern struct obs_source_info mpv_source_info;
@@ -61,7 +62,8 @@ bool obs_module_load(void)
 {
     // init glad
 #if defined(WIN32)
-    
+    if (!wgl_init())
+        return false;
 #else
     gladLoadEGL();
 #endif
@@ -81,4 +83,9 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
     obs_log(LOG_INFO, "plugin unloaded");
+#if defined(WIN32)
+    wgl_deinit();
+#else
+    gladUnloadEGL();
+#endif
 }

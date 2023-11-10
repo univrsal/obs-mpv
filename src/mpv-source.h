@@ -117,6 +117,7 @@ struct mpv_source {
     gs_texture_t* video_buffer;
     pthread_mutex_t mpv_event_mutex;
     GLuint fbo;
+	GLuint wgl_texture; // on windows we need to create a texture for mpv to render to
     bool redraw;
     bool init;
     bool init_failed;
@@ -146,6 +147,11 @@ struct mpv_source {
     PFNGLGETINTEGERVPROC _glGetIntegerv;
     PFNGLUSEPROGRAMPROC _glUseProgram;
     PFNGLREADPIXELSPROC _glReadPixels;
+	PFNGLGENTEXTURESPROC _glGenTextures;
+	PFNGLBINDTEXTUREPROC _glBindTexture;
+	PFNGLTEXPARAMETERIPROC _glTexParameteri;
+	PFNGLTEXIMAGE2DPROC _glTexImage2D;
+	PFNGLDELETETEXTURESPROC _glDeleteTextures;
 
     // jack source for audio
     obs_source_t* jack_source;

@@ -422,8 +422,28 @@ void mpvs_generate_texture(struct mpv_source* context)
         context->_glDeleteFramebuffers(1, &context->fbo);
     }
 
-    context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
+     context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
 
+#if defined(WIN32)
+     context->_glBindTexture(GL_TEXTURE_2D, 0);
+
+     if (context->fbo)
+         context->_glDeleteFramebuffers(1, &context->fbo);
+     if (context->wgl_texture)
+        context->_glDeleteTextures(1, &context->wgl_texture);
+
+    context->_glGenTextures(1, &context->wgl_texture);
+    context->_glBindTexture(GL_TEXTURE_2D, context->wgl_texture);
+    context->_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, context->width, context->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    context->_glGenFramebuffers(1, &context->fbo);
+    context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
+    context->_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, context->wgl_texture, 0);
+#else
     gs_set_render_target(context->video_buffer, NULL);
     if (context->fbo)
         context->_glDeleteFramebuffers(1, &context->fbo);
@@ -435,4 +455,5 @@ void mpvs_generate_texture(struct mpv_source* context)
         context->_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *tex, 0);
     }
     gs_set_render_target(NULL, NULL);
+#endif
 }

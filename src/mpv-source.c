@@ -5,10 +5,11 @@
 #endif
 #include <plugin-support.h>
 #include <util/platform.h>
+#include <util/darray.h>
 
 #include "mpv-backend.h"
-#include <util/darray.h>
 #include "mpv-source.h"
+#include "wgl.h"
 
 /* Misc functions ---------------------------------------------------------- */
 
@@ -178,10 +179,26 @@ static const char* mpvs_source_get_name(void* unused)
 static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
 {
     struct mpv_source* context = bzalloc(sizeof(struct mpv_source));
+
     context->width = 512;
     context->height = 512;
     context->src = source;
     context->redraw = true;
+#if defined(WIN32)
+    wgl_enter_context();
+    context->_glGenFramebuffers = glGenFramebuffers;
+    context->_glDeleteFramebuffers = glDeleteFramebuffers;
+    context->_glBindFramebuffer = glBindFramebuffer;
+    context->_glFramebufferTexture2D = glFramebufferTexture2D;
+    context->_glGetIntegerv = glGetIntegerv;
+    context->_glUseProgram = glUseProgram;
+    context->_glReadPixels = glReadPixels;
+    context->_glGenTextures = glGenTextures;
+    context->_glBindTexture = glBindTexture;
+    context->_glTexParameteri = glTexParameteri;
+    context->_glDeleteTextures = glDeleteTextures;
+    context->_glTexImage2D = glTexImage2D;
+#else
     context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glGenFramebuffers");
     context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glDeleteFramebuffers");
     context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)GLAD_GET_PROC_ADDR("glBindFramebuffer");
@@ -189,6 +206,13 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)GLAD_GET_PROC_ADDR("glGetIntegerv");
     context->_glUseProgram = (PFNGLUSEPROGRAMPROC)GLAD_GET_PROC_ADDR("glUseProgram");
     context->_glReadPixels = (PFNGLREADPIXELSPROC)GLAD_GET_PROC_ADDR("glReadPixels");
+    context->_glGenTextures = (PFNGLGENTEXTURESPROC)GLAD_GET_PROC_ADDR("glGenTextures");
+    context->_glBindTexture = (PFNGLBINDTEXTUREPROC)GLAD_GET_PROC_ADDR("glBindTexture");
+    context->_glTexParameteri = (PFNGLTEXPARAMETERIPROC)GLAD_GET_PROC_ADDR("glTexParameteri");
+    context->_glDeleteTextures = (PFNGLDELETETEXTURESPROC)GLAD_GET_PROC_ADDR("glDeleteTextures");
+    context->_glTexImage2D = (PFNGLTEXIMAGE2DPROC)GLAD_GET_PROC_ADDR("glTexImage2D");
+#endif
+    
     context->audio_backend = mpvs_audio_driver_to_index(MPVS_DEFAULT_AUDIO_DRIVER);
 
     da_init(context->tracks);
@@ -257,6 +281,14 @@ static void mpvs_source_destroy(void* data)
         bfree(context->tmp_playlist_path);
         context->tmp_playlist_path = NULL;
     }
+
+#if defined(WIN32)
+    // destroy textures and fbo
+    if (context->wgl_texture)
+        context->_glDeleteTextures(1, &context->wgl_texture);
+    if (context->fbo)
+        context->_glDeleteFramebuffers(1, &context->fbo);
+#endif
 
     destroy_jack_source(context);
     dstr_free(&context->last_path);
