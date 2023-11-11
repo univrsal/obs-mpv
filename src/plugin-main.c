@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 OBS_DECLARE_MODULE()
 extern struct obs_source_info mpv_source_info;
 int mpvs_have_jack_capture_source = 0;
+int obs_device_type = 0;
 
 lookup_t* vlc_video_lookup = NULL;
 lookup_t* obs_module_lookup = NULL;
@@ -68,7 +69,9 @@ bool obs_module_load(void)
     obs_log(LOG_INFO, "plugin loaded successfully (version %s)",
         PLUGIN_VERSION);
 
-
+    obs_enter_graphics();
+    obs_device_type = gs_get_device_type();
+    obs_leave_graphics();
     return true;
 }
 
@@ -81,6 +84,7 @@ void obs_module_unload(void)
 {
     obs_log(LOG_INFO, "plugin unloaded");
 #if defined(WIN32)
-    wgl_deinit();
+    if (obs_device_type == GS_DEVICE_DIRECT3D_11)
+        wgl_deinit();
 #endif
 }

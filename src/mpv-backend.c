@@ -179,7 +179,12 @@ void mpvs_handle_events(struct mpv_source* context)
                 context->width = (uint32_t) w;
                 context->height = (uint32_t) h;
 #if defined(WIN32)
-                calc_texture_size(w, h, &context->d3d_width, &context->d3d_height);
+                if (obs_device_type == GS_DEVICE_DIRECT3D_11) {
+                    calc_texture_size(w, h, &context->d3d_width, &context->d3d_height);
+                } else {
+                    context->d3d_height = context->height;
+                    context->d3d_width = context->width;
+                }
 #endif
                 context->generate_texture(context);
             }
@@ -201,9 +206,9 @@ void mpvs_handle_events(struct mpv_source* context)
                 context->redraw = true;
             }
         }
-        if (event->error < 0) {
+
+        if (event->error < 0)
             obs_log(LOG_ERROR, "mpv command %s failed: %s", mpv_event_name(event->event_id), mpv_error_string(event->error));
-        }
     }
 }
 
@@ -212,19 +217,16 @@ void mpvs_init(struct mpv_source* context)
     if (context->init_failed)
         return;
 
-#if defined(WIN32)
-    if (!wgl_init()) {
-        context->init_failed = true;
-        return;
-    }
-#endif
-
-    int type = gs_get_device_type();
-
-    if (type == GS_DEVICE_OPENGL) {
+    if (obs_device_type == GS_DEVICE_OPENGL) {
         context->render = mpvs_render_gl;
         context->generate_texture = mpvs_generate_texture_gl;
-    } else if (type == GS_DEVICE_DIRECT3D_11) {
+    } else if (obs_device_type == GS_DEVICE_DIRECT3D_11) {
+#if defined(WIN32)
+        if (!wgl_init()) {
+            context->init_failed = true;
+            return;
+        }
+#endif
         context->render = wgl_have_NV_DX_interop ? mpvs_render_d3d_shared : mpvs_render_d3d;
         context->generate_texture = mpvs_generate_texture_d3d;
     }
@@ -384,9 +386,9 @@ void mpvs_load_file(struct mpv_source* context, const char* playlist_file)
 {
     const char* cmd[] = { "loadfile", playlist_file, NULL };
     int result = mpv_command_async(context->mpv, MPVS_PLAYLIST_LOADED, cmd);
-    if (result < 0) {
+
+    if (result < 0)
         obs_log(LOG_ERROR, "Failed to load file: %s, %s", playlist_file, mpv_error_string(result));
-    }
 }
 
 void mpvs_set_mpv_properties(struct mpv_source* context)

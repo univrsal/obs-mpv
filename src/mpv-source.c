@@ -252,11 +252,14 @@ static void mpvs_source_destroy(void* data)
     }
 
 #if defined(WIN32)
-    // destroy textures and fbo
-    if (context->wgl_texture)
-        context->_glDeleteTextures(1, &context->wgl_texture);
-    if (context->fbo)
-        context->_glDeleteFramebuffers(1, &context->fbo);
+    // destroy textures and fbo when the backend is d3d
+    // when it's opengl we just use the texture that obs created
+    if (obs_device_type == GS_DEVICE_DIRECT3D_11) {
+        if (context->wgl_texture)
+            context->_glDeleteTextures(1, &context->wgl_texture);
+        if (context->fbo)
+            context->_glDeleteFramebuffers(1, &context->fbo);
+    }
 #endif
 
     destroy_jack_source(context);

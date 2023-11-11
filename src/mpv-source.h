@@ -13,6 +13,7 @@
 #    define GLAD_GET_PROC_ADDR eglGetProcAddress
 #endif
 extern int mpvs_have_jack_capture_source;
+extern int obs_device_type;
 
 #define util_min(a, b) ((a) < (b) ? (a) : (b))
 #define util_max(a, b) ((a) > (b) ? (a) : (b))
