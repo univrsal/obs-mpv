@@ -1,17 +1,16 @@
 #include "wgl.h"
-
-#include <glad/glad_wgl.h>
 #include <obs-module.h>
 #include <plugin-support.h>
-#include <Windows.h>
 
 WNDCLASSEX wc;
 HWND hwnd;
 HGLRC hrc;
 HDC hdc;
+HANDLE wgl_dx_device;
 
 static const char* dummy_window_class = "GLDummyWindow-obs-mpv";
 static bool registered_dummy_window_class = false;
+bool wgl_have_NV_DX_interop = false;
 
 struct dummy_context {
     HWND hwnd;
@@ -389,6 +388,13 @@ bool wgl_init()
     if (glVersion) {
         obs_log(LOG_INFO, "OpenGL Version: %s\n", glVersion);
     }
+
+    wgl_dx_device = wglDXOpenDeviceNV(gs_get_device_obj());
+    if (wgl_dx_device) {
+        wgl_have_NV_DX_interop = true;
+        obs_log(LOG_INFO, "NV_DX_interop extension is supported, sharing texture between OpenGL and Direct3D");
+    }
+    
     init_result = true;
     return true;
 fail:
@@ -398,8 +404,9 @@ fail:
 
 void wgl_deinit()
 {
-    // Cleanup
     wglMakeCurrent(NULL, NULL);
+    if (wgl_dx_device)
+        wglDXCloseDeviceNV(wgl_dx_device);
     wglDeleteContext(hrc);
     ReleaseDC(hwnd, hdc);
     DestroyWindow(hwnd);
@@ -414,4 +421,22 @@ bool wgl_enter_context()
 void wgl_exit_context()
 {
     wglMakeCurrent(NULL, NULL);
+}
+
+void wgl_init_shared_gl_texture(void* context)
+{
+    struct mpv_source* src = context;
+    src->gl_shared_texture_handle = wglDXRegisterObjectNV(wgl_dx_device,
+        gs_texture_get_obj(src->video_buffer),
+        src->wgl_texture,
+        GL_TEXTURE_2D,
+        WGL_ACCESS_WRITE_DISCARD_NV);
+}
+
+void wgl_free_shared_gl_texture(void* context)
+{
+    struct mpv_source* src = context;
+    if (src->gl_shared_texture_handle)
+        wglDXUnregisterObjectNV(wgl_dx_device, src->gl_shared_texture_handle);
+    src->gl_shared_texture_handle = 0;
 }

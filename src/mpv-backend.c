@@ -208,13 +208,18 @@ void mpvs_handle_events(struct mpv_source* context)
 
 void mpvs_render(struct mpv_source* context)
 {
-#if !defined(WIN32)
+#if defined(WIN32)
+    if (wgl_have_NV_DX_interop)
+        wgl_lock_shared_texture(context);
+#else
     // make sure that we restore the current program after mpv is done
     // as obs will not load the progam because it internally keeps track
     // of the current program and only loads it if it has changed
     GLuint currentProgram;
     context->_glGetIntegerv(GL_CURRENT_PROGRAM, (GLint*)&currentProgram);
 #endif
+
+
     mpv_render_frame_info info;
 
     mpv_render_param params[] = {
@@ -234,20 +239,23 @@ void mpvs_render(struct mpv_source* context)
         obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
 
 #if defined(WIN32)
-    if (context->media_state == OBS_MEDIA_STATE_PLAYING) {
-        uint8_t* ptr;
-        uint32_t linesize;
-        if (gs_texture_map(context->video_buffer, &ptr, &linesize)) {
-            context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
-            context->_glReadPixels(0, 0, context->d3d_width, context->d3d_height, GL_RGBA, GL_UNSIGNED_BYTE, ptr);
+    if (wgl_have_NV_DX_interop) {
+        wgl_unlock_shared_texture(context);
+    } else {
+        if (context->media_state == OBS_MEDIA_STATE_PLAYING) {
+            uint8_t* ptr;
+            uint32_t linesize;
+            if (gs_texture_map(context->video_buffer, &ptr, &linesize)) {
+                context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
+                context->_glReadPixels(0, 0, context->d3d_width, context->d3d_height, GL_RGBA, GL_UNSIGNED_BYTE, ptr);
+            }
+            gs_texture_unmap(context->video_buffer);
         }
-        gs_texture_unmap(context->video_buffer);
     }
-#endif
-
-#if !defined(WIN32)
+#else
     context->_glUseProgram(currentProgram);
 #endif
+
 }
 
 void mpvs_init(struct mpv_source* context)
@@ -461,7 +469,7 @@ void mpvs_generate_texture(struct mpv_source* context)
 #if defined(WIN32)
      if (context->video_buffer) 
         gs_texture_destroy(context->video_buffer);
-     context->video_buffer = gs_texture_create(context->d3d_width, context->d3d_height, GS_RGBA, 1, NULL, GS_DYNAMIC);
+     context->video_buffer = gs_texture_create(context->d3d_width, context->d3d_height, GS_RGBA, 1, NULL, wgl_have_NV_DX_interop ? 0 : GS_DYNAMIC);
 
      context->_glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -481,6 +489,10 @@ void mpvs_generate_texture(struct mpv_source* context)
     context->_glGenFramebuffers(1, &context->fbo);
     context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
     context->_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, context->wgl_texture, 0);
+
+    if (wgl_have_NV_DX_interop) {
+        wgl_init_shared_gl_texture(context);
+    }
 #else
     if (context->video_buffer) {
         gs_texture_destroy(context->video_buffer);

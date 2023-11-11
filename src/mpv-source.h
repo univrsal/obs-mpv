@@ -161,4 +161,8 @@ struct mpv_source {
     obs_source_t* jack_source;
     char* jack_port_name;   // name of the jack capture source
     char* jack_client_name; // name of the jack client mpv opens for audio output
+
+#if defined(WIN32)
+    HANDLE gl_shared_texture_handle;
+#endif
 };
