@@ -6,7 +6,7 @@ Adds a video source for OBS Studio using libmpv.
 
 [![CI](https://github.com/univrsal/obs-mpv/actions/workflows/push.yaml/badge.svg)](https://github.com/univrsal/obs-mpv/actions/workflows/push.yaml)
 
-Things left to fix/address
+Things left to note/fix
 - Maybe add option to load a custom mpv.conf file and the option to set mpv properties/settings
 - Add option to set behavior for player when source is inactive
 - Audio control
@@ -18,4 +18,5 @@ Things left to fix/address
           might be useful.
         - Windows just plays audio through the default audio device
 - The interact GUI works only for mouse movements, it does not react to clicks
-- Windows can't use Direct3D for rendering and instead copies from OpenGL which is a bit inefficient
+- On Windows both Direct3D and OpenGL backends of OBS are supported, if Direct3D is used the plugin will try to use the [WGL_NV_DX_interop](https://registry.khronos.org/OpenGL/extensions/NV/WGL_NV_DX_interop.txt)
+  extension, which allows sharing of textures between Direct3D and OpenGL. If the extension is not supported the textures will be copied, which is less efficient.
