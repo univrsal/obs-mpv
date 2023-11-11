@@ -47,7 +47,9 @@ void obs_module_set_locale(const char* locale)
         text_lookup_destroy(vlc_video_lookup);
     if (obs_module_lookup)
         text_lookup_destroy(obs_module_lookup);
-    vlc_video_lookup = obs_module_load_locale(obs_get_module("vlc-video"), "en-US", locale);
+    obs_module_t* vlc_mod = obs_get_module("vlc-video");
+    if (vlc_mod)
+        vlc_video_lookup = obs_module_load_locale(vlc_mod, "en-US", locale);
     obs_module_lookup = obs_module_load_locale(obs_current_module(), "en-US", locale);
 }
 
