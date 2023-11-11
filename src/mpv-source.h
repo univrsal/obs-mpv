@@ -99,6 +99,8 @@ extern int mpvs_have_jack_capture_source;
 #define EXTENSIONS_MEDIA \
 	EXTENSIONS_VIDEO ";" EXTENSIONS_AUDIO ";" EXTENSIONS_PLAYLIST
 
+typedef void(mpvs_platform_callback_t)(struct mpv_source*);
+
 struct mpv_source {
     // basic source stuff
     uint32_t width;
@@ -121,7 +123,7 @@ struct mpv_source {
     gs_texture_t* video_buffer;
     pthread_mutex_t mpv_event_mutex;
     GLuint fbo;
-	GLuint wgl_texture; // on windows we need to create a texture for mpv to render to
+	GLuint wgl_texture; // on windows with d3d we need to create a texture for mpv to render to
     bool redraw;
     bool init;
     bool init_failed;
@@ -162,6 +164,8 @@ struct mpv_source {
     char* jack_port_name;   // name of the jack capture source
     char* jack_client_name; // name of the jack client mpv opens for audio output
 
+	mpvs_platform_callback_t* render;
+    mpvs_platform_callback_t* generate_texture;
 #if defined(WIN32)
     HANDLE gl_shared_texture_handle;
 #endif

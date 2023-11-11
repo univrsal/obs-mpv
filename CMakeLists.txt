@@ -38,7 +38,7 @@ else()
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/deps/libmpv/libmpv-2.dll"
         CONFIGURATIONS RelWithDebInfo Debug Release
         DESTINATION obs-plugins/64bit)
-    target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/wgl.c src/wgl.h)
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/wgl.c src/wgl.h src/mpv-backend-d3d.c)
 endif()
 message(STATUS ${MPV_INCLUDE_DIRS})
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs ${MPV_LIBRARIES} OBS::glad)
@@ -62,7 +62,7 @@ if(ENABLE_QT)
                AUTORCC ON)
 endif()
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c src/mpv-source.c src/mpv-source.h src/mpv-backend.c src/mpv-backend.h)
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c src/mpv-source.c src/mpv-source.h src/mpv-backend.c src/mpv-backend.h src/mpv-backend-opengl.c)
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 

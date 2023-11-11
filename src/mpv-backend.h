@@ -180,9 +180,7 @@ static inline int mpvs_mpv_log_level_to_obs(mpv_log_level lvl)
 
 static inline void calc_texture_size(int64_t w, int64_t h, uint32_t* u, uint32_t* v)
 {
-
     *u = (uint32_t)pow(2, ceil(log2((double)w)));
-
     *v = (uint32_t)pow(2, ceil(log2((double)h)));
 }
 
@@ -194,8 +192,32 @@ void mpvs_load_file(struct mpv_source* context, const char* playlist_file);
 
 void mpvs_set_mpv_properties(struct mpv_source* context);
 
-void mpvs_generate_texture(struct mpv_source* context);
-
 void mpvs_handle_events(struct mpv_source* context);
 
-void mpvs_render(struct mpv_source* context);
+void mpvs_generate_texture_gl(struct mpv_source* context);
+
+void mpvs_render_gl(struct mpv_source* context);
+
+#if defined(WIN32)
+void mpvs_generate_texture_d3d(struct mpv_source* context);
+
+void mpvs_render_d3d(struct mpv_source* context);
+
+void mpvs_render_d3d_shared(struct mpv_source* context);
+#else
+// stubs for other platforms
+static inline void mpvs_generate_texture_d3d(struct mpv_source* context)
+{
+    UNUSED_PARAMETER(context);
+}
+
+static inline void mpvs_render_d3d(struct mpv_source* context);
+{
+    UNUSED_PARAMETER(context);
+}
+
+static inline void mpvs_render_d3d_shared(struct mpv_source* context);
+{
+    UNUSED_PARAMETER(context);
+}
+#endif

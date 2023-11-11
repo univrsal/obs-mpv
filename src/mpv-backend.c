@@ -1,5 +1,5 @@
 #include "mpv-backend.h"
-#include <obs-frontend-api.h>
+#include <obs-module.h>
 #include <util/darray.h>
 #include <util/dstr.h>
 #include "wgl.h"
@@ -181,10 +181,11 @@ void mpvs_handle_events(struct mpv_source* context)
 #if defined(WIN32)
                 calc_texture_size(w, h, &context->d3d_width, &context->d3d_height);
 #endif
-                mpvs_generate_texture(context);
+                context->generate_texture(context);
             }
         } else if (event->event_id == MPV_EVENT_START_FILE) {
             os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_OPENING);
+            mpvs_set_mpv_properties(context);
         } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
             context->file_loaded = true;
             os_atomic_store_long(&context->media_state, OBS_MEDIA_STATE_PLAYING);
@@ -206,58 +207,6 @@ void mpvs_handle_events(struct mpv_source* context)
     }
 }
 
-void mpvs_render(struct mpv_source* context)
-{
-#if defined(WIN32)
-    if (wgl_have_NV_DX_interop)
-        wgl_lock_shared_texture(context);
-#else
-    // make sure that we restore the current program after mpv is done
-    // as obs will not load the progam because it internally keeps track
-    // of the current program and only loads it if it has changed
-    GLuint currentProgram;
-    context->_glGetIntegerv(GL_CURRENT_PROGRAM, (GLint*)&currentProgram);
-#endif
-
-
-    mpv_render_frame_info info;
-
-    mpv_render_param params[] = {
-        { MPV_RENDER_PARAM_OPENGL_FBO, &(mpv_opengl_fbo) {
-                                           .fbo = context->fbo,
-                                           .w = context->width,
-                                           .h = context->height,
-                                       } },
-        { MPV_RENDER_PARAM_NEXT_FRAME_INFO, &info }, { MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME, &(int) { 1 } }, { 0 }
-    };
-
-    gs_blend_state_push();
-    int result = mpv_render_context_render(context->mpv_gl, params);
-    gs_blend_state_pop();
-
-    if (result != 0)
-        obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
-
-#if defined(WIN32)
-    if (wgl_have_NV_DX_interop) {
-        wgl_unlock_shared_texture(context);
-    } else {
-        if (context->media_state == OBS_MEDIA_STATE_PLAYING) {
-            uint8_t* ptr;
-            uint32_t linesize;
-            if (gs_texture_map(context->video_buffer, &ptr, &linesize)) {
-                context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
-                context->_glReadPixels(0, 0, context->d3d_width, context->d3d_height, GL_RGBA, GL_UNSIGNED_BYTE, ptr);
-            }
-            gs_texture_unmap(context->video_buffer);
-        }
-    }
-#else
-    context->_glUseProgram(currentProgram);
-#endif
-
-}
-
 void mpvs_init(struct mpv_source* context)
 {
     if (context->init_failed)
@@ -268,6 +217,18 @@ void mpvs_init(struct mpv_source* context)
         context->init_failed = true;
         return;
     }
+#endif
+
+    int type = gs_get_device_type();
+
+    if (type == GS_DEVICE_OPENGL) {
+        context->render = mpvs_render_gl;
+        context->generate_texture = mpvs_generate_texture_gl;
+    } else if (type == GS_DEVICE_DIRECT3D_11) {
+        context->render = wgl_have_NV_DX_interop ? mpvs_render_d3d_shared : mpvs_render_d3d;
+        context->generate_texture = mpvs_generate_texture_d3d;
+    }
+    
     context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glGenFramebuffers");
     context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glDeleteFramebuffers");
     context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)GLAD_GET_PROC_ADDR("glBindFramebuffer");
@@ -280,8 +241,13 @@ void mpvs_init(struct mpv_source* context)
     context->_glTexParameteri = (PFNGLTEXPARAMETERIPROC)GLAD_GET_PROC_ADDR("glTexParameteri");
     context->_glDeleteTextures = (PFNGLDELETETEXTURESPROC)GLAD_GET_PROC_ADDR("glDeleteTextures");
     context->_glTexImage2D = (PFNGLTEXIMAGE2DPROC)GLAD_GET_PROC_ADDR("glTexImage2D");
-#endif
-    context->init = true;
+    
+    context->width = 64; // doesn't matter, this'll change once mpv loads a file and tells us the size
+    context->height = 64;
+    context->d3d_width = 64;
+    context->d3d_height = 64;
+    context->generate_texture(context);
+
     context->mpv = mpv_create();
 
     MPV_SET_OPTION("audio-client-name", "OBS");
@@ -306,12 +272,13 @@ void mpvs_init(struct mpv_source* context)
     result = mpv_render_context_create(&context->mpv_gl, context->mpv, params);
     if (result != 0) {
         obs_log(LOG_ERROR, "Failed to initialize mpvs GL context: %s", mpv_error_string(result));
-    } else {
-        mpvs_set_mpv_properties(context);
-        mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
-        mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
+        context->init_failed = true;
+        return;
     }
 
+    mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
+    mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
+    
     mpv_observe_property(context->mpv, 0, "playback-time", MPV_FORMAT_DOUBLE);
     mpv_observe_property(context->mpv, 0, "mute", MPV_FORMAT_FLAG);
     mpv_observe_property(context->mpv, 0, "core-idle", MPV_FORMAT_FLAG);
@@ -324,6 +291,8 @@ void mpvs_init(struct mpv_source* context)
         bfree(context->queued_temp_playlist_file_path);
         context->queued_temp_playlist_file_path = NULL;
     }
+    mpvs_set_mpv_properties(context);
+    context->init = true;
 }
 
 void mpvs_init_track(struct mpv_source* context, struct mpv_track_info* info, mpv_node* node)
@@ -464,53 +433,3 @@ void mpvs_set_mpv_properties(struct mpv_source* context)
     MPV_SET_PROP_STR("osd-on-seek", context->osc ? "bar" : "no");
 }
 
-void mpvs_generate_texture(struct mpv_source* context)
-{
-#if defined(WIN32)
-     if (context->video_buffer) 
-        gs_texture_destroy(context->video_buffer);
-     context->video_buffer = gs_texture_create(context->d3d_width, context->d3d_height, GS_RGBA, 1, NULL, wgl_have_NV_DX_interop ? 0 : GS_DYNAMIC);
-
-     context->_glBindTexture(GL_TEXTURE_2D, 0);
-
-     if (context->fbo)
-         context->_glDeleteFramebuffers(1, &context->fbo);
-     if (context->wgl_texture)
-        context->_glDeleteTextures(1, &context->wgl_texture);
-
-    context->_glGenTextures(1, &context->wgl_texture);
-    context->_glBindTexture(GL_TEXTURE_2D, context->wgl_texture);
-    context->_glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, context->d3d_width, context->d3d_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    context->_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-    context->_glGenFramebuffers(1, &context->fbo);
-    context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
-    context->_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, context->wgl_texture, 0);
-
-    if (wgl_have_NV_DX_interop) {
-        wgl_init_shared_gl_texture(context);
-    }
-#else
-    if (context->video_buffer) {
-        gs_texture_destroy(context->video_buffer);
-        context->_glDeleteFramebuffers(1, &context->fbo);
-    }
-
-    context->video_buffer = gs_texture_create(context->width, context->height, GS_RGBA, 1, NULL, GS_RENDER_TARGET);
-
-    gs_set_render_target(context->video_buffer, NULL);
-    if (context->fbo)
-        context->_glDeleteFramebuffers(1, &context->fbo);
-    context->_glGenFramebuffers(1, &context->fbo);
-
-    unsigned int* tex = gs_texture_get_obj(context->video_buffer);
-    if (tex) {
-        context->_glBindFramebuffer(GL_FRAMEBUFFER, context->fbo);
-        context->_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, *tex, 0);
-    }
-    gs_set_render_target(NULL, NULL);
-#endif
-}

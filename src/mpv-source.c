@@ -186,21 +186,7 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     context->height = 512;
     context->src = source;
     context->redraw = true;
-#if !defined(WIN32)
-    context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glGenFramebuffers");
-    context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glDeleteFramebuffers");
-    context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)GLAD_GET_PROC_ADDR("glBindFramebuffer");
-    context->_glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC)GLAD_GET_PROC_ADDR("glFramebufferTexture2D");
-    context->_glGetIntegerv = (PFNGLGETINTEGERVPROC)GLAD_GET_PROC_ADDR("glGetIntegerv");
-    context->_glUseProgram = (PFNGLUSEPROGRAMPROC)GLAD_GET_PROC_ADDR("glUseProgram");
-    context->_glReadPixels = (PFNGLREADPIXELSPROC)GLAD_GET_PROC_ADDR("glReadPixels");
-    context->_glGenTextures = (PFNGLGENTEXTURESPROC)GLAD_GET_PROC_ADDR("glGenTextures");
-    context->_glBindTexture = (PFNGLBINDTEXTUREPROC)GLAD_GET_PROC_ADDR("glBindTexture");
-    context->_glTexParameteri = (PFNGLTEXPARAMETERIPROC)GLAD_GET_PROC_ADDR("glTexParameteri");
-    context->_glDeleteTextures = (PFNGLDELETETEXTURESPROC)GLAD_GET_PROC_ADDR("glDeleteTextures");
-    context->_glTexImage2D = (PFNGLTEXIMAGE2DPROC)GLAD_GET_PROC_ADDR("glTexImage2D");
-#endif
-    
+
     context->audio_backend = mpvs_audio_driver_to_index(MPVS_DEFAULT_AUDIO_DRIVER);
 
     da_init(context->tracks);
@@ -228,14 +214,6 @@ static void* mpvs_source_create(obs_data_t* settings, obs_source_t* source)
     sub_track.title = bstrdup(track_name.array);
     da_push_back(context->tracks, &sub_track);
     dstr_free(&track_name);
-
-#if !defined(WIN32)
-    // generates a selected texture with size 512x512, mpv will tell us the actual size later
-    obs_enter_graphics();
-    mpvs_generate_texture(context);
-    obs_leave_graphics();
-#endif
-
 
     create_jack_capture(context);
 
@@ -453,7 +431,7 @@ static void mpvs_source_render(void* data, gs_effect_t* effect)
 
     bool stopped_or_ended = context->media_state == OBS_MEDIA_STATE_ENDED || context->media_state == OBS_MEDIA_STATE_STOPPED;
 
-    if (stopped_or_ended)
+    if (stopped_or_ended || !context->video_buffer)
         return; // don't render the black texture
     const bool previous = gs_framebuffer_srgb_enabled();
     gs_enable_framebuffer_srgb(true);
@@ -713,8 +691,8 @@ static void mpvs_source_video_tick(void* data, float seconds)
     if (need_poll)
         mpvs_handle_events(context);
 
-    if (context->init && need_redraw)
-        mpvs_render(context);
+    if (context->render && need_redraw)
+        context->render(context);
     obs_leave_graphics();
 }
 
