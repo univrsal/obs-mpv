@@ -26,12 +26,12 @@ static inline void wgl_unlock_shared_texture(void* context)
 
 static inline void wgl_lock_shared_texture(void* context)
 {
-    UNUSED_PARAMETER(context);
+    (void)context;
 }
 
 static inline void wgl_unlock_shared_texture(void* context)
 {
-    UNUSED_PARAMETER(context);
+    (void)context;
 }
 #endif
 
