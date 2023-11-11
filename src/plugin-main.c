@@ -16,11 +16,11 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
+#include "wgl.h"
 #include <glad/glad.h>
 #include <glad/glad_egl.h>
 #include <obs-module.h>
 #include <plugin-support.h>
-#include "wgl.h"
 
 OBS_DECLARE_MODULE()
 extern struct obs_source_info mpv_source_info;

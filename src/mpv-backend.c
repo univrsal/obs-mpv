@@ -1,8 +1,8 @@
 #include "mpv-backend.h"
+#include "wgl.h"
 #include <obs-module.h>
 #include <util/darray.h>
 #include <util/dstr.h>
-#include "wgl.h"
 
 const char* audio_backends[] = {
 #if defined(__linux__)
@@ -176,8 +176,8 @@ void mpvs_handle_events(struct mpv_source* context)
             // Retrieve the new video size.
             int64_t w, h;
             if (mpv_get_property(context->mpv, "dwidth", MPV_FORMAT_INT64, &w) >= 0 && mpv_get_property(context->mpv, "dheight", MPV_FORMAT_INT64, &h) >= 0 && w > 0 && h > 0) {
-                context->width = (uint32_t) w;
-                context->height = (uint32_t) h;
+                context->width = (uint32_t)w;
+                context->height = (uint32_t)h;
 #if defined(WIN32)
                 if (obs_device_type == GS_DEVICE_DIRECT3D_11) {
                     calc_texture_size(w, h, &context->d3d_width, &context->d3d_height);
@@ -185,6 +185,9 @@ void mpvs_handle_events(struct mpv_source* context)
                     context->d3d_height = context->height;
                     context->d3d_width = context->width;
                 }
+#else
+                context->d3d_height = context->height;
+                context->d3d_width = context->width;
 #endif
                 context->generate_texture(context);
             }
@@ -230,7 +233,7 @@ void mpvs_init(struct mpv_source* context)
         context->render = wgl_have_NV_DX_interop ? mpvs_render_d3d_shared : mpvs_render_d3d;
         context->generate_texture = mpvs_generate_texture_d3d;
     }
-    
+
     context->_glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glGenFramebuffers");
     context->_glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)GLAD_GET_PROC_ADDR("glDeleteFramebuffers");
     context->_glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)GLAD_GET_PROC_ADDR("glBindFramebuffer");
@@ -243,7 +246,7 @@ void mpvs_init(struct mpv_source* context)
     context->_glTexParameteri = (PFNGLTEXPARAMETERIPROC)GLAD_GET_PROC_ADDR("glTexParameteri");
     context->_glDeleteTextures = (PFNGLDELETETEXTURESPROC)GLAD_GET_PROC_ADDR("glDeleteTextures");
     context->_glTexImage2D = (PFNGLTEXIMAGE2DPROC)GLAD_GET_PROC_ADDR("glTexImage2D");
-    
+
     context->width = 64; // doesn't matter, this'll change once mpv loads a file and tells us the size
     context->height = 64;
     context->d3d_width = 64;
@@ -280,7 +283,7 @@ void mpvs_init(struct mpv_source* context)
 
     mpv_set_wakeup_callback(context->mpv, handle_mpvs_events, context);
     mpv_render_context_set_update_callback(context->mpv_gl, on_mpvs_render_events, context);
-    
+
     mpv_observe_property(context->mpv, 0, "playback-time", MPV_FORMAT_DOUBLE);
     mpv_observe_property(context->mpv, 0, "mute", MPV_FORMAT_FLAG);
     mpv_observe_property(context->mpv, 0, "core-idle", MPV_FORMAT_FLAG);
@@ -434,4 +437,3 @@ void mpvs_set_mpv_properties(struct mpv_source* context)
     MPV_SET_PROP_STR("input-vo-keyboard", context->osc ? "yes" : "no");
     MPV_SET_PROP_STR("osd-on-seek", context->osc ? "bar" : "no");
 }
-

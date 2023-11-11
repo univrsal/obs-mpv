@@ -2,9 +2,9 @@
 #include <stdbool.h>
 
 #if defined(WIN32)
-#include <Windows.h>
-#include <glad/glad_wgl.h>
-#include "mpv-source.h"
+#    include "mpv-source.h"
+#    include <Windows.h>
+#    include <glad/glad_wgl.h>
 
 extern bool wgl_have_NV_DX_interop;
 extern HANDLE wgl_dx_device;
@@ -46,4 +46,3 @@ void wgl_exit_context();
 void wgl_init_shared_gl_texture(void* context);
 
 void wgl_free_shared_gl_texture(void* context);
-

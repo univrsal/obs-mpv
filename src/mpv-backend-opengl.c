@@ -27,7 +27,6 @@ void mpvs_render_gl(struct mpv_source* context)
         obs_log(LOG_ERROR, "mpv render error: %s", mpv_error_string(result));
 
     context->_glUseProgram(currentProgram);
-
 }
 
 void mpvs_generate_texture_gl(struct mpv_source* context)

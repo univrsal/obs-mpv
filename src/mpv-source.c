@@ -1,11 +1,11 @@
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #if !defined(WIN32)
-#include <obs-nix-platform.h>
+#    include <obs-nix-platform.h>
 #endif
 #include <plugin-support.h>
-#include <util/platform.h>
 #include <util/darray.h>
+#include <util/platform.h>
 
 #include "mpv-backend.h"
 #include "mpv-source.h"
@@ -273,9 +273,9 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
     struct mpv_source* context = data;
     context->osc = obs_data_get_bool(settings, "osc");
 
-    int audio_track = (int) obs_data_get_int(settings, "audio_track");
+    int audio_track = (int)obs_data_get_int(settings, "audio_track");
     int video_track = (int)obs_data_get_int(settings, "video_track");
-    int sub_track = (int) obs_data_get_int(settings, "sub_track");
+    int sub_track = (int)obs_data_get_int(settings, "sub_track");
 
     generate_and_load_playlist(context);
 
@@ -322,7 +322,7 @@ static void mpvs_source_update(void* data, obs_data_t* settings)
         obs_source_add_active_child(context->src, context->jack_source);
     } else {
         obs_source_remove_active_child(context->src, context->jack_source);
-        context->audio_backend = (int) obs_data_get_int(settings, "audio_driver");
+        context->audio_backend = (int)obs_data_get_int(settings, "audio_driver");
     }
 
     mpvs_set_audio_backend(context, context->audio_backend);
@@ -418,7 +418,7 @@ static obs_properties_t* mpvs_source_properties(void* data)
 
     int mpv_major_version = MPV_CLIENT_API_VERSION >> 16;
     int mpv_minor_version = MPV_CLIENT_API_VERSION & 0xffff;
-    struct dstr about = {0};
+    struct dstr about = { 0 };
     dstr_printf(&about, "Based on <a href=\"https://mpv.io\">libmpv</a> version %i.%i<br> Plugin by <a href=\"https://vrsal.xyz/$\">univrsal</a>", mpv_major_version, mpv_minor_version);
     obs_properties_add_text(props, "about", about.array, OBS_TEXT_INFO);
 
@@ -514,7 +514,7 @@ static int64_t mpvs_get_duration(void* data)
         obs_log(LOG_ERROR, "Error getting duration: %s", mpv_error_string(error));
         return 0;
     }
-    return (int64_t) floor(duration) * 1000;
+    return (int64_t)floor(duration) * 1000;
 }
 
 static int64_t mpvs_get_time(void* data)
@@ -533,7 +533,7 @@ static int64_t mpvs_get_time(void* data)
         obs_log(LOG_ERROR, "Error getting playback time: %s", mpv_error_string(error));
         return 0;
     }
-    return (int64_t) floor(playback_time) * 1000;
+    return (int64_t)floor(playback_time) * 1000;
 }
 
 static void mpvs_set_time(void* data, int64_t ms)

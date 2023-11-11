@@ -60,8 +60,7 @@ static inline void init_dummy_pixel_format(PIXELFORMATDESCRIPTOR* pfd)
     pfd->cDepthBits = 24;
     pfd->cStencilBits = 8;
     pfd->iLayerType = PFD_MAIN_PLANE;
-    pfd->dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL |
-        PFD_DOUBLEBUFFER;
+    pfd->dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
 }
 
 static inline HGLRC gl_init_basic_context(HDC hdc)
@@ -125,7 +124,6 @@ static inline void gl_dummy_context_free(struct dummy_context* dummy)
     memset(dummy, 0, sizeof(struct dummy_context));
 }
 
-
 static bool register_dummy_class(void)
 {
     static bool created = false;
@@ -185,7 +183,8 @@ static inline HGLRC gl_init_context(HDC hdc)
         WGL_CONTEXT_MINOR_VERSION_ARB,
         3,
         0,
-        0 };
+        0
+    };
 
     HGLRC hglrc = wglCreateContextAttribsARB(hdc, 0, attribs);
     if (!hglrc) {
@@ -203,7 +202,6 @@ static inline HGLRC gl_init_context(HDC hdc)
 
     return hglrc;
 }
-
 
 static inline void add_attrib(struct darray* list, int attrib, int val)
 {
@@ -256,7 +254,7 @@ static int gl_choose_pixel_format(HDC hdc, const struct gs_init_data* info)
 
     if (!color_bits) {
         obs_log(LOG_ERROR, "gl_init_pixel_format: color format not "
-            "supported");
+                           "supported");
         return false;
     }
 
@@ -377,7 +375,7 @@ bool wgl_init()
             GetLastError());
         return false;
     }
-    
+
     // Initialize Glad
     if (!gladLoadGL()) {
         obs_log(LOG_ERROR, "Failed to initialize OpenGL");
@@ -394,7 +392,7 @@ bool wgl_init()
         wgl_have_NV_DX_interop = true;
         obs_log(LOG_INFO, "NV_DX_interop extension is supported, sharing texture between OpenGL and Direct3D");
     }
-    
+
     init_result = true;
     return true;
 fail:

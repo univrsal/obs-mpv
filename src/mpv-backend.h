@@ -211,12 +211,12 @@ static inline void mpvs_generate_texture_d3d(struct mpv_source* context)
     UNUSED_PARAMETER(context);
 }
 
-static inline void mpvs_render_d3d(struct mpv_source* context);
+static inline void mpvs_render_d3d(struct mpv_source* context)
 {
     UNUSED_PARAMETER(context);
 }
 
-static inline void mpvs_render_d3d_shared(struct mpv_source* context);
+static inline void mpvs_render_d3d_shared(struct mpv_source* context)
 {
     UNUSED_PARAMETER(context);
 }
